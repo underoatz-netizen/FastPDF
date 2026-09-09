@@ -1,0 +1,14 @@
+# Build output
+build/
+out/
+dist/
+
+# CMake user presets / IDE files
+CMakeUserPresets.json
+.vs/
+*.user
+*.suo
+
+# Logs
+logs/
+*.log
