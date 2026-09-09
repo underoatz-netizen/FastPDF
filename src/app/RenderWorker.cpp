@@ -188,7 +188,7 @@ void RenderWorker::Run() {
                 completion->documentInfo.error = error;
             } else {
                 document_ = std::make_unique<fastpdf::pdfium::PdfDocument>(
-                    source.bytes());
+                    source);
                 if (!document_->isOpen()) {
                     completion->documentInfo.error = document_->openError();
                     document_.reset();

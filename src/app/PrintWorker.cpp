@@ -140,7 +140,7 @@ PrintJobResult PrintWorker::ExecutePrintJob(
     }
 
     // Open PDF document on this worker thread
-    pdfium::PdfDocument doc(source.bytes());
+    pdfium::PdfDocument doc(source);
     if (!doc.isOpen()) {
         result.errorMessage = L"Failed to open PDF document for printing.";
         return result;

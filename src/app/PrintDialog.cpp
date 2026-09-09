@@ -95,7 +95,7 @@ void PrintDialog::Show(HWND hwndParent, const std::wstring& pdfPath,
 
     // Inspect first page size for default preview
     if (pdfSource_.isValid()) {
-        pdfium::PdfDocument doc(pdfSource_.bytes());
+        pdfium::PdfDocument doc(pdfSource_);
         if (doc.isOpen() && totalPages > 0) {
             const int previewIdx = std::clamp(currentPage, 0, totalPages - 1);
             doc.pageSize(previewIdx, previewPageWidthPt_, previewPageHeightPt_);

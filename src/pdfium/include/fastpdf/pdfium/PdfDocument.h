@@ -2,15 +2,16 @@
 
 // Low-level persistent-document render primitive for FastPDF.
 //
-// PdfSource loads a PDF's bytes exactly once into immutable, reference-counted
-// storage. PdfDocument opens that source as a PDFium document and owns the
-// open document for its lifetime. Together they give the render worker a
-// document that stays open across many page renders (the Phase-2 design
-// re-opened the document on every render; Phase 3 keeps it open).
+// PdfSource loads a PDF's bytes exactly once into an opaque, read-only,
+// reference-counted memory mapping (no eager whole-file read). PdfDocument
+// opens that source as a PDFium document and owns the open document for its
+// lifetime. Together they give the render worker a document that stays open
+// across many page renders (the Phase-2 design re-opened the document on every
+// render; Phase 3 keeps it open).
 //
 // Threading contract (enforced by design):
 //   * PdfSource is an immutable value: it may be created on any thread and
-//     shared freely. Its bytes outlive any document that referenced them
+//     shared freely. Its mapping outlives any document that referenced it
 //     (reference counting), including after the document is closed.
 //   * PdfDocument is creator-thread-affine and noncopyable/nonmovable: every
 //     method and the destructor must run on the thread that constructed it.
@@ -32,38 +33,51 @@
 // confined to the .cpp; the type matches fpdfview.h's FPDF_DOCUMENT.
 struct fpdf_document_t__;
 
+// Opaque read-only memory-mapped PDF file. Defined in the .cpp; PdfSource
+// holds a shared reference so the mapping outlives any document opened from it.
+struct MappedPdfFile;
+
 namespace fastpdf::pdfium {
 
-// Immutable, shared, loaded-once source bytes for a PDF.
+// Immutable, shared, loaded-once source for a PDF: an opaque read-only file
+// mapping (no eager whole-file read into a heap buffer).
 class PdfSource {
 public:
-    // Loads the file at |path| into shared immutable bytes. On failure returns
-    // an invalid source (isValid() == false) and sets |error| to the mapped
-    // user-facing outcome. Performs only file I/O - no PDF parsing - so it is
-    // safe to call on any thread.
+    // Loads the file at |path| into an opaque read-only memory mapping. On
+    // failure returns an invalid source (isValid() == false) and sets |error|
+    // to the mapped user-facing outcome. Performs only file I/O - no PDF
+    // parsing - so it is safe to call on any thread. The mapping is created
+    // with FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE so the file
+    // is not locked against other readers or replacers.
     static PdfSource Load(const std::wstring& path, OpenError& error) noexcept;
 
     PdfSource() = default;
 
-    bool isValid() const noexcept { return bytes_ != nullptr; }
+    bool isValid() const noexcept { return mapping_ != nullptr; }
 
-    // The immutable, reference-counted source bytes (nullptr when invalid).
-    // The caller must keep this shared_ptr (or a copy) alive for as long as
-    // any document opened from it remains open.
-    std::shared_ptr<const std::vector<std::uint8_t>> bytes() const noexcept {
-        return bytes_;
-    }
+    // The mapped bytes (nullptr / 0 when invalid). The caller must keep this
+    // PdfSource (or a copy) alive for as long as any document opened from it
+    // remains open.
+    const std::uint8_t* data() const noexcept;
+    std::size_t size() const noexcept;
 
 private:
-    std::shared_ptr<const std::vector<std::uint8_t>> bytes_;
+    std::shared_ptr<const MappedPdfFile> mapping_;
 };
 
 // An open PDFium document. Noncopyable and nonmovable; bound to the thread
 // that constructed it.
 class PdfDocument {
 public:
-    // Opens |source| as a PDFium document on the calling (creator) thread. On
-    // failure isOpen() is false and openError() reports the mapped outcome.
+    // Opens |source| (an opaque read-only file mapping) as a PDFium document
+    // on the calling (creator) thread. The mapping is retained for the
+    // document's lifetime. On failure isOpen() is false and openError()
+    // reports the mapped outcome.
+    explicit PdfDocument(PdfSource source) noexcept;
+
+    // Opens an in-memory byte buffer as a PDFium document. The buffer must
+    // outlive the document (FPDF_LoadMemDocument64 references, not copies, the
+    // buffer). Kept for callers that already hold the bytes in memory.
     explicit PdfDocument(
         std::shared_ptr<const std::vector<std::uint8_t>> source) noexcept;
 
@@ -118,10 +132,12 @@ public:
 private:
     fpdf_document_t__* document_ = nullptr;
     OpenError openError_ = OpenError::None;
-    // Keeps the source bytes alive for the document's lifetime.
-    // FPDF_LoadMemDocument64 references (does not copy) the buffer, so the
-    // bytes must outlive the document - this reference guarantees that.
-    std::shared_ptr<const std::vector<std::uint8_t>> source_;
+    // Keeps the source alive for the document's lifetime: either the opaque
+    // file mapping or the in-memory byte buffer. FPDF_LoadMemDocument64
+    // references (does not copy) the buffer, so the source must outlive the
+    // document - these references guarantee that.
+    PdfSource source_;
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes_;
 };
 
 }  // namespace fastpdf::pdfium

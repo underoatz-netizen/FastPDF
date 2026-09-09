@@ -6,6 +6,7 @@
 // fit-to-box result, and that the missing / corrupted / unreadable /
 // password-required error paths map onto the user-facing OpenError outcomes.
 
+#include <fastpdf/pdfium/PdfDocument.h>
 #include <fastpdf/pdfium/PdfiumLibrary.h>
 
 #include <windows.h>
@@ -32,6 +33,8 @@ using fastpdf::pdfium::OpenDocumentInfo;
 using fastpdf::pdfium::OpenError;
 using fastpdf::pdfium::PageRenderRequest;
 using fastpdf::pdfium::PageRenderResult;
+using fastpdf::pdfium::PdfDocument;
+using fastpdf::pdfium::PdfSource;
 using fastpdf::pdfium::RenderPage;
 using fastpdf::pdfium::RenderRequest;
 using fastpdf::pdfium::RenderResult;
@@ -526,6 +529,44 @@ FASTPDF_TEST(render_locked_file_reports_unreadable) {
     FASTPDF_CHECK(!result.ok);
     FASTPDF_CHECK_EQ(static_cast<int>(result.error),
                      static_cast<int>(OpenError::Unreadable));
+
+    DeleteFileW(path.c_str());
+}
+
+FASTPDF_TEST(source_mapping_does_not_lock_file_and_opens_document) {
+    // The mapped source must (a) expose the file bytes, (b) not lock the file
+    // against other readers/writers/replacers (the old eager read used
+    // FILE_SHARE_READ only), and (c) open a working PDFium document.
+    const std::wstring path = WriteFixtureToTempFile();
+    FASTPDF_CHECK(!path.empty());
+
+    OpenError error = OpenError::None;
+    PdfSource source = PdfSource::Load(path, error);
+    FASTPDF_CHECK(source.isValid());
+    FASTPDF_CHECK_EQ(static_cast<int>(error), static_cast<int>(OpenError::None));
+    FASTPDF_CHECK(source.size() > 0);
+    FASTPDF_CHECK(source.data() != nullptr);
+
+    // Another handle with write/delete sharing must be able to open the file
+    // while the mapping is alive.
+    HANDLE probe = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                   FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                               nullptr);
+    FASTPDF_CHECK(probe != INVALID_HANDLE_VALUE);
+    if (probe != INVALID_HANDLE_VALUE) {
+        CloseHandle(probe);
+    }
+
+    // A document opened from the mapping renders correctly.
+    PdfDocument doc(source);
+    FASTPDF_CHECK(doc.isOpen());
+    FASTPDF_CHECK_EQ(doc.pageCount(), 1);
+    double width = 0.0, height = 0.0;
+    FASTPDF_CHECK(doc.pageSize(0, width, height));
+    FASTPDF_CHECK_EQ(width, 612.0);
+    FASTPDF_CHECK_EQ(height, 792.0);
 
     DeleteFileW(path.c_str());
 }

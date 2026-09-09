@@ -27,7 +27,7 @@ RenderResult OpenAndRenderFirstPage(const RenderRequest& request) noexcept {
         result.error = error;
         return result;
     }
-    PdfDocument document(source.bytes());
+    PdfDocument document(source);
     if (!document.isOpen()) {
         result.error = document.openError();
         return result;
@@ -77,7 +77,7 @@ DocumentInfoResult OpenDocumentInfo(const DocumentInfoRequest& request) noexcept
         result.error = error;
         return result;
     }
-    PdfDocument document(source.bytes());
+    PdfDocument document(source);
     if (!document.isOpen()) {
         result.error = document.openError();
         return result;
@@ -124,7 +124,7 @@ PageRenderResult RenderPage(const PageRenderRequest& request) noexcept {
         result.error = error;
         return result;
     }
-    PdfDocument document(source.bytes());
+    PdfDocument document(source);
     if (!document.isOpen()) {
         result.error = document.openError();
         return result;

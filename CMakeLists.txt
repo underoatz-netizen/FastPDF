@@ -7,7 +7,7 @@ if(POLICY CMP0144)
 endif()
 
 project(FastPDF
-    VERSION 0.1.0
+    VERSION 0.1.1
     DESCRIPTION "Fast PDF Utility Viewer - persistent async renderer (Handoff 4)"
     LANGUAGES CXX)
 

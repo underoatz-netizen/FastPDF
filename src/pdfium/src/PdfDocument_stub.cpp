@@ -11,6 +11,14 @@ PdfSource PdfSource::Load(const std::wstring& /*path*/,
     return {};
 }
 
+const std::uint8_t* PdfSource::data() const noexcept { return nullptr; }
+
+std::size_t PdfSource::size() const noexcept { return 0; }
+
+PdfDocument::PdfDocument(PdfSource /*source*/) noexcept {
+    openError_ = OpenError::PdfiumUnavailable;
+}
+
 PdfDocument::PdfDocument(
     std::shared_ptr<const std::vector<std::uint8_t>> /*source*/) noexcept {
     openError_ = OpenError::PdfiumUnavailable;

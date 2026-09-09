@@ -10,17 +10,17 @@ description field.
 
 | | |
 | --- | --- |
-| Version in this repository | `0.1.0` (`CMakeLists.txt`, embedded as the file/product version) |
+| Version in this repository | `0.1.1` (`CMakeLists.txt`, embedded as the file/product version) |
 | Published GitHub Releases | **None.** The repository currently has no published Releases and no tags |
 | Published release assets | **None.** No binaries are attached and `dist/` is excluded by [`.gitignore`](.gitignore) |
-| Expected asset once a release is created | `FastPDF-0.1.0-win-x64.zip`, built locally with [`scripts/package_release.ps1`](scripts/package_release.ps1) or `cmake --build --preset release --target fastpdf_package_release` |
-| Tag name proposed for that release | `v0.1.0` (planned — not created yet) |
+| Expected asset once a release is created | `FastPDF-0.1.1-win-x64.zip`, built locally with [`scripts/package_release.ps1`](scripts/package_release.ps1) or `cmake --build --preset release --target fastpdf_package_release` |
+| Tag name proposed for that release | `v0.1.1` (planned — not created yet) |
 
 Everything below is therefore **draft release text**: the facts about the
 software are supported by the repository, while the asset itself does not exist
 on GitHub until someone builds it, creates the Release and attaches the ZIP.
 
-## v0.1.0 at a glance
+## v0.1.1 at a glance
 
 - **What it is:** a lightweight, fast, minimal Windows PDF viewer — Win32 +
   Direct2D + PDFium, continuous single-column reading, rendering off the UI
@@ -29,18 +29,18 @@ on GitHub until someone builds it, creates the Release and attaches the ZIP.
   `FastPDF.exe`; no installer and no administrator rights.
 - **Main capabilities:** viewing and zooming, presentation mode, screenshot
   capture, PDF → PNG, images → PDF, native printing, incremental text search,
-  recent files, an optional diagnostics overlay, and an original embedded
-  application icon.
-- **Not in this release:** password prompt, command-line file argument, OCR,
+  recent files, direct command-line PDF open, an optional diagnostics overlay,
+  and an original embedded application icon.
+- **Not in this release:** password prompt, OCR,
   bundled PDFium in the source repository, and a top-level `LICENSE` file.
-- **Test status:** 23 CTest cases pass with PDFium enabled (Debug and Release);
-  14 are registered without it. These are maintainer-recorded results; the
+- **Test status:** 24 CTest cases pass with PDFium enabled (Debug and Release);
+  15 are registered without it. These are maintainer-recorded results; the
   repository has no CI workflow.
 
 ## Copy/paste text for the GitHub Release description
 
-- Suggested **tag**: `v0.1.0` (create it on the commit you are releasing).
-- Suggested **release title**: `FastPDF 0.1.0 (Windows x64)`.
+- Suggested **tag**: `v0.1.1` (create it on the commit you are releasing).
+- Suggested **release title**: `FastPDF 0.1.1 (Windows x64)`.
 
 Paste the block below into the release description. It uses absolute links so it
 renders correctly outside the repository file view, and indented code blocks so
@@ -48,10 +48,10 @@ the whole block stays copyable as one piece. Replace nothing except the parts
 that describe assets you did not attach.
 
 ```markdown
-**FastPDF 0.1.0** is the first release of a lightweight, fast, minimal Windows
+**FastPDF 0.1.1** is the first release of a lightweight, fast, minimal Windows
 PDF viewer built with Win32 + Direct2D + PDFium.
 
-> **Assets:** attach `FastPDF-0.1.0-win-x64.zip` only after it has been produced
+> **Assets:** attach `FastPDF-0.1.1-win-x64.zip` only after it has been produced
 > locally by [`scripts/package_release.ps1`](https://github.com/underoatz-netizen/FastPDF/blob/master/scripts/package_release.ps1).
 > If no asset is attached to this release, FastPDF is available as source code
 > only — see the build instructions in the
@@ -70,14 +70,20 @@ PDF viewer built with Win32 + Direct2D + PDFium.
 1. Download and extract the ZIP to any folder, for example `C:\Tools\FastPDF\`.
 2. Start `FastPDF.exe`. Nothing is installed and no registry entries are written.
 3. Press **Ctrl+O** (or **File > Open...**) and choose a PDF, or drag a single
-   PDF onto the window.
+   PDF onto the window. You can also open one PDF directly at launch:
+   `FastPDF.exe "C:\path\to\file.pdf"` (the path may contain spaces and
+   Unicode; quote it as shown).
 4. To move or remove the app, move or delete the folder.
 
-## What is included in 0.1.0
+## What is included in 0.1.1
 
 - **Continuous PDF viewing** — single-column layout, pages rendered off the UI
   thread into CPU bitmaps and displayed with Direct2D; half-size preview first,
   then final quality.
+- **Direct command-line open** — pass one PDF path as the first argument
+  (`FastPDF.exe "path\to\file.pdf"`); spaces and Unicode are supported. A
+  no-argument launch opens the normal empty window and never tries to open the
+  executable itself as a PDF.
 - **Zoom and page anchor** — Fit Width, Fit Page, 100%, free zoom clamped to
   25%-800%, cursor-centered Ctrl+mouse-wheel zoom, and a page anchor that keeps
   the logical location across zoom, window resize and per-monitor DPI changes.
@@ -131,11 +137,10 @@ PDF viewer built with Win32 + Direct2D + PDFium.
 The package is produced from a Release build; `MANIFEST.txt` lets you verify the
 files with `Get-FileHash`.
 
-## Known limitations in 0.1.0
+## Known limitations in 0.1.1
 
 - Password-protected PDFs show `This PDF requires a password.` — there is no
   password prompt yet.
-- No command-line file argument; open files from the app or by drag-and-drop.
 - Rendering is serialized through one PDFium call gate, so a slow page can queue
   behind the current one (the UI itself never blocks).
 - Fit Width / Fit Page in the viewer fit to the **first page** of the document.
@@ -151,6 +156,11 @@ files with `Get-FileHash`.
   (release tag `chromium/8035`, version 154.0.8035.0, non-V8 build).
 - The source repository has no top-level `LICENSE` file; `LICENSE.txt` inside
   this package is the license/terms notice written by the packaging script.
+- Performance figures are single-machine observations from
+  `scripts/benchmark_startup.ps1`, which measures FastPDF's own startup/open/
+  first-frame phases only. They are **not** a claim that FastPDF is faster than
+  SumatraPDF or any other viewer; any cross-product comparison must use a
+  matched methodology.
 
 ## Build from source (if no binary asset is attached)
 
@@ -161,10 +171,11 @@ files with `Get-FileHash`.
 
 ## Testing status
 
-23 CTest cases pass with PDFium enabled, in both Debug and Release. Built with
-`-DFASTPDF_WITH_PDFIUM=OFF` the configuration now registers 14 cases; its last
-recorded full run was 13/13, taken before the search-panel routing test was
-added, so that configuration has not been re-verified since. These results were
+24 CTest cases pass with PDFium enabled, in both Debug and Release. Built with
+`-DFASTPDF_WITH_PDFIUM=OFF` the configuration now registers 15 cases; its last
+recorded full run was 13/13, taken before the search-panel routing and
+command-line-open tests were added, so that configuration has not been
+re-verified since. These results were
 recorded by the maintainer on a single Windows 11 x64 reference machine; this
 repository has no CI workflow, and `fastpdf_print_integration_tests`
 additionally requires Microsoft Print to PDF to be available on the machine that
@@ -186,7 +197,7 @@ accompany any redistribution of `pdfium.dll`.
 - Do not paste a download URL by hand — GitHub generates the asset link when the
   file is attached.
 - Do not claim a checksum for the ZIP in advance; publish the hash only after the
-  asset exists: `Get-FileHash .\dist\FastPDF-0.1.0-win-x64.zip -Algorithm SHA256`.
+  asset exists: `Get-FileHash .\dist\FastPDF-0.1.1-win-x64.zip -Algorithm SHA256`.
 - The version string comes from `CMakeLists.txt`; bump it there before building
   the next package so the ZIP name and `MANIFEST.txt` stay consistent.
 - Commit and push this documentation first: the Thai release body links to

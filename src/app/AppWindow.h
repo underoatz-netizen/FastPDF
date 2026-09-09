@@ -24,6 +24,7 @@
 #include <fastpdf/renderer/lru_cache.h>
 #include <fastpdf/renderer/render_key.h>
 
+#include "Benchmark.h"
 #include "RenderWorker.h"
 
 namespace fastpdf::app {
@@ -71,6 +72,10 @@ public:
 
     bool Create(const wchar_t* title) noexcept;
     void Show() noexcept;
+
+    // Opens |path| as the current document (used for direct command-line
+    // launches). Safe to call once the window has been created.
+    void OpenPathFromCommandLine(const std::wstring& path) noexcept;
 
 private:
     enum class ViewState { Empty, Loading, Ready, Error };
@@ -127,6 +132,9 @@ private:
     void OpenPath(const std::wstring& path) noexcept;
     void ResetDocument() noexcept;
     void RequestDocumentInfo() noexcept;
+    void RequestInitialPreview() noexcept;
+    void PromoteAfterInitialPreview() noexcept;
+    void FlushPostFirstFrameWork() noexcept;
     double ViewportWidth() const noexcept;
     double ViewportHeight() const noexcept;
     int CurrentPageIndex() const noexcept;
@@ -300,8 +308,22 @@ private:
     bool diagnosticsEnabled_ = false;
     std::uint64_t appStartupTimeMs_ = 0;
     std::uint64_t docOpenRequestTimeMs_ = 0;
-    bool firstVisiblePageMeasured_ = false;
     double lastFrameTimeMs_ = 0.0;
+
+    // Benchmark instrumentation (P0): active only when FASTPDF_BENCHMARK is
+    // set; records startup/open/first-frame phases as JSON.
+    Benchmark benchmark_;
+
+    // Initial-open fast path (P2): the initial visible page renders as a
+    // half-size preview first; final quality and adjacent pages are requested
+    // only after that preview is actually presented (EndDraw). Logging and
+    // recent-file persistence are deferred until then so they cannot block the
+    // first render.
+    bool initialPreviewPending_ = false;
+    bool postFirstFrameWorkPending_ = false;
+    bool firstFramePresentedLogged_ = false;
+    bool firstPreviewRenderLogged_ = false;
+    bool firstFinalRenderLogged_ = false;
 };
 
 } // namespace fastpdf::app

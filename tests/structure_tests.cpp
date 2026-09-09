@@ -13,6 +13,14 @@
 #error "FASTPDF_EXE_PATH must be defined to the built FastPDF.exe path"
 #endif
 
+#ifndef FASTPDF_PROJECT_VERSION
+#error "FASTPDF_PROJECT_VERSION must be defined to the current project version"
+#endif
+
+// Widen a macro-expanded literal (e.g. "0.1.1" -> L"0.1.1").
+#define FASTPDF_WIDE_IMPL(x) L##x
+#define FASTPDF_WIDE(x) FASTPDF_WIDE_IMPL(x)
+
 namespace {
 
 std::wstring Utf8ToWide(const std::string& utf8) {
@@ -121,7 +129,8 @@ FASTPDF_TEST(built_exe_directory_has_notices) {
 FASTPDF_TEST(dist_packaging_layout_smoke) {
     // If a dist release package was generated, verify its structure:
     // FastPDF.exe, pdfium.dll, THIRD_PARTY_NOTICES.txt, LICENSE.txt, README.txt, MANIFEST.txt
-    const std::wstring distDir = L"dist\\FastPDF-0.1.0-win-x64";
+    const std::wstring distDir =
+        std::wstring(L"dist\\FastPDF-") + FASTPDF_WIDE(FASTPDF_PROJECT_VERSION) + L"-win-x64";
     WIN32_FILE_ATTRIBUTE_DATA dirFad{};
     if (GetFileAttributesExW(distDir.c_str(), GetFileExInfoStandard, &dirFad)) {
         const std::wstring requiredFiles[] = {

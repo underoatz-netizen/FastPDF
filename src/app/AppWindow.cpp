@@ -202,6 +202,7 @@ bool AppWindow::Create(const wchar_t* title) noexcept {
     worker_.Start(hwnd_, kWorkerDoneMessage);
     statusText_ = L"Press Ctrl+O or File > Open to open a PDF.";
 
+    benchmark_.Phase("startup");
     appStartupTimeMs_ = GetTickCount64();
     Log(L"FastPDF startup complete (HWND=" + std::to_wstring(reinterpret_cast<std::uintptr_t>(hwnd_)) +
         L", DPI=" + std::to_wstring(dpi_) + L")");
@@ -398,6 +399,41 @@ void AppWindow::OnPaint() noexcept {
         // the pages from the retained CPU bitmaps.
         DiscardDeviceResources();
         InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+
+    // First usable page: the current page's bitmap (preview or final) is in
+    // the CPU cache, so this EndDraw actually presented it. This is the
+    // authoritative first-frame measurement (not worker completion).
+    if (state_ == ViewState::Ready && layout_.has_value()) {
+        const int page = CurrentPageIndex();
+        const fastpdf::core::layout::PageRect rect = layout_->pageRect(page);
+        const fastpdf::renderer::PixelSize finalSize =
+            ComputeRenderSize(rect.width, rect.height);
+        const fastpdf::renderer::PixelSize previewSize =
+            fastpdf::renderer::PreviewSizeFor(finalSize.width, finalSize.height);
+        const fastpdf::renderer::RenderKey previewKey =
+            MakeKey(page, previewSize, fastpdf::renderer::Quality::Preview);
+        const fastpdf::renderer::RenderKey finalKey =
+            MakeKey(page, finalSize, fastpdf::renderer::Quality::Final);
+        const bool pageVisible =
+            cpuCache_.contains(previewKey) || cpuCache_.contains(finalKey);
+
+        if (pageVisible && !firstFramePresentedLogged_) {
+            firstFramePresentedLogged_ = true;
+            benchmark_.Phase("first_frame_presented");
+            benchmark_.Flush();
+            if (docOpenRequestTimeMs_ != 0) {
+                Log(L"First visible page presented: " +
+                    std::to_wstring(GetTickCount64() - docOpenRequestTimeMs_) +
+                    L" ms (page " + std::to_wstring(page) + L")");
+            }
+        }
+
+        // The initial preview has been presented: promote to final quality and
+        // render the normal adjacent pages now.
+        if (initialPreviewPending_ && cpuCache_.contains(previewKey)) {
+            PromoteAfterInitialPreview();
+        }
     }
 }
 
@@ -1300,6 +1336,7 @@ void AppWindow::OnDropFile(const std::wstring& path) noexcept {
 }
 
 void AppWindow::OpenPath(const std::wstring& path) noexcept {
+    benchmark_.Phase("open_request");
     if (presenting_) {
         ExitPresentation();  // Opening a new document leaves presentation.
     }
@@ -1308,10 +1345,13 @@ void AppWindow::OpenPath(const std::wstring& path) noexcept {
     state_ = ViewState::Loading;
     statusText_ = L"Opening " + currentPath_ + L"...";
     docOpenRequestTimeMs_ = GetTickCount64();
-    firstVisiblePageMeasured_ = false;
     Log(L"Open requested: " + currentPath_);
     RequestDocumentInfo();
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void AppWindow::OpenPathFromCommandLine(const std::wstring& path) noexcept {
+    OpenPath(path);
 }
 
 void AppWindow::ResetDocument() noexcept {
@@ -1334,6 +1374,11 @@ void AppWindow::ResetDocument() noexcept {
     errorMessage_.clear();
     previewActive_ = false;
     currentMatchRects_.clear();
+    initialPreviewPending_ = false;
+    postFirstFrameWorkPending_ = false;
+    firstFramePresentedLogged_ = false;
+    firstPreviewRenderLogged_ = false;
+    firstFinalRenderLogged_ = false;
 }
 
 void AppWindow::RequestDocumentInfo() noexcept {
@@ -1341,6 +1386,57 @@ void AppWindow::RequestDocumentInfo() noexcept {
     ++viewEpoch_;
     nextJobId_ = 1;
     worker_.OpenDocument(docEpoch_, currentPath_);
+}
+
+void AppWindow::RequestInitialPreview() noexcept {
+    if (state_ != ViewState::Ready || !layout_.has_value()) {
+        return;
+    }
+    // The initial visible page renders as a fast half-size preview first so
+    // the first frame appears quickly; final quality and adjacent pages are
+    // requested after that frame is presented. Record the render scale and
+    // sync the worker's view epoch so the preview job is not dropped as stale
+    // and the later promotion does not treat the scale as changed (which
+    // would clear the just-presented preview from the cache).
+    renderScale_ = layout_->pixelsPerPoint();
+    worker_.SetViewEpoch(viewEpoch_);
+    const int page = CurrentPageIndex();
+    const fastpdf::core::layout::PageRect rect = layout_->pageRect(page);
+    const fastpdf::renderer::PixelSize finalSize =
+        ComputeRenderSize(rect.width, rect.height);
+    const fastpdf::renderer::PixelSize previewSize =
+        fastpdf::renderer::PreviewSizeFor(finalSize.width, finalSize.height);
+    const fastpdf::renderer::RenderKey previewKey =
+        MakeKey(page, previewSize, fastpdf::renderer::Quality::Preview);
+    SubmitRender(previewKey, fastpdf::renderer::RenderPriority::Visible);
+    PruneD2dCache({previewKey});
+}
+
+void AppWindow::PromoteAfterInitialPreview() noexcept {
+    if (!initialPreviewPending_) {
+        return;
+    }
+    initialPreviewPending_ = false;
+    previewActive_ = false;
+    RequestRenders();
+    UpdateStatusText();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    FlushPostFirstFrameWork();
+}
+
+void AppWindow::FlushPostFirstFrameWork() noexcept {
+    if (!postFirstFrameWorkPending_) {
+        return;
+    }
+    postFirstFrameWorkPending_ = false;
+    if (state_ == ViewState::Ready && documentInfo_.has_value()) {
+        Log(L"Opened: " + currentPath_ + L" (pages=" +
+            std::to_wstring(documentInfo_->pageCount) + L", open=" +
+            std::to_wstring(documentInfo_->openDurationMs) + L" ms)");
+        // Add to recent files (deferred so persistence cannot block the first
+        // presented frame).
+        SaveCurrentToRecentFiles();
+    }
 }
 
 void AppWindow::OnWorkerDone(
@@ -1403,20 +1499,24 @@ void AppWindow::OnDocumentInfoDone(
 
     documentInfo_ = std::move(completion->documentInfo);
     state_ = ViewState::Ready;
-    Log(L"Opened: " + currentPath_ + L" (pages=" +
-        std::to_wstring(documentInfo_->pageCount) + L", open=" +
-        std::to_wstring(documentInfo_->openDurationMs) + L" ms)");
+    benchmark_.Phase("open_complete");
 
-    // A freshly opened document is idle: render final quality immediately.
-    previewActive_ = false;
+    // A freshly opened document presents the initial visible page as a fast
+    // half-size preview first; final quality and adjacent pages are requested
+    // only after that preview is actually presented (see OnPaint). Logging and
+    // recent-file persistence are deferred until then so they cannot block the
+    // first render. The idle timer is a fallback in case the preview render
+    // fails and never presents.
+    previewActive_ = true;
+    initialPreviewPending_ = true;
+    postFirstFrameWorkPending_ = true;
     idleDebounce_.NoteActivity(GetTickCount64());
+    SetTimer(hwnd_, kPromotionTimerId, static_cast<UINT>(kPromotionDelayMs),
+             nullptr);
 
     RebuildLayout();
-    RequestRenders();
+    RequestInitialPreview();
     UpdateStatusText();
-
-    // Add to recent files
-    SaveCurrentToRecentFiles();
 }
 
 void AppWindow::OnPageRenderDone(
@@ -1466,15 +1566,19 @@ void AppWindow::OnPageRenderDone(
             L", cache=" + std::to_wstring(cacheBytes / 1024) + L" KB" +
             L", hitRate=" + std::to_wstring(static_cast<int>(hitRatePct)) + L"%]");
 
-        // First visible page latency measurement
-        if (!firstVisiblePageMeasured_ && docOpenRequestTimeMs_ != 0) {
-            const int curPage = CurrentPageIndex();
-            if (completion->key.pageIndex == curPage) {
-                firstVisiblePageMeasured_ = true;
-                const std::uint64_t latency = GetTickCount64() - docOpenRequestTimeMs_;
-                Log(L"First visible page latency: " + std::to_wstring(latency) +
-                    L" ms (page " + std::to_wstring(curPage) + L")");
-            }
+        // Benchmark phases: first preview and first final render completions.
+        // The authoritative "first usable page" phase is recorded at the
+        // actual presented EndDraw frame in OnPaint, not at worker completion.
+        if (!firstPreviewRenderLogged_ &&
+            completion->key.quality == fastpdf::renderer::Quality::Preview) {
+            firstPreviewRenderLogged_ = true;
+            benchmark_.Phase("first_preview_render");
+        }
+        if (!firstFinalRenderLogged_ &&
+            completion->key.quality == fastpdf::renderer::Quality::Final) {
+            firstFinalRenderLogged_ = true;
+            benchmark_.Phase("first_final_render");
+            benchmark_.Flush();
         }
     }
     if (!presenting_) {
@@ -1535,6 +1639,12 @@ void AppWindow::OnPromotionTimer() noexcept {
         return;  // Still within the idle window; the timer fires again.
     }
     KillTimer(hwnd_, kPromotionTimerId);
+    if (initialPreviewPending_) {
+        // The initial preview never presented within the idle window (e.g. its
+        // render failed); promote to final quality and adjacent pages anyway.
+        PromoteAfterInitialPreview();
+        return;
+    }
     if (previewActive_) {
         previewActive_ = false;
         RequestRenders();

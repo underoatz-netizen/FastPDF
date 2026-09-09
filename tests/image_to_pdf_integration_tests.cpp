@@ -173,7 +173,7 @@ FASTPDF_TEST(image_to_pdf_multi_page_roundtrip_verification) {
     FASTPDF_CHECK(source.isValid());
     FASTPDF_CHECK(openError == fastpdf::pdfium::OpenError::None);
 
-    fastpdf::pdfium::PdfDocument doc(source.bytes());
+    fastpdf::pdfium::PdfDocument doc(source);
     FASTPDF_CHECK(doc.isOpen());
     FASTPDF_CHECK_EQ(doc.pageCount(), 3);
 

@@ -10,6 +10,10 @@ add_executable(FastPDF WIN32
     main.cpp
     AppWindow.h
     AppWindow.cpp
+    CommandLineOpen.h
+    CommandLineOpen.cpp
+    Benchmark.h
+    Benchmark.cpp
     RenderWorker.h
     RenderWorker.cpp
     DropRouting.h

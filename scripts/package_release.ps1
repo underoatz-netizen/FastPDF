@@ -93,8 +93,44 @@ if (-not (Test-Path -LiteralPath $readmeSrc)) {
     exit 1
 }
 
-# Determine version from FastPDF.exe product version or fallback to 0.1.0
-$version = "0.1.0"
+# Resolve the release version in this order:
+#   1. FastPDF.exe product version (authoritative for the binary being packaged)
+#   2. the canonical project VERSION in the root CMakeLists.txt
+#   3. the literal fallback below
+# $FallbackVersion must stay in sync with the CMakeLists.txt version if both the
+# exe metadata and the CMake parse are unavailable.
+$FallbackVersion = "0.1.1"
+
+function Get-CMakeProjectVersion {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # Returns the VERSION x.y.z declared inside the project(FastPDF ...) call,
+    # or an empty string when it cannot be resolved. Pure text parsing: no
+    # CMake invocation and no external dependency.
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return "" }
+        $lines = @(Get-Content -LiteralPath $Path)
+        $block = @()
+        $inProject = $false
+        foreach ($line in $lines) {
+            if (-not $inProject) {
+                if ($line -match '^\s*project\s*\(\s*FastPDF\b') { $inProject = $true } else { continue }
+            }
+            $block += $line
+            if ($line.TrimEnd().EndsWith(")")) { break }
+        }
+        if ($block.Count -eq 0) { return "" }
+        $match = [regex]::Match(($block -join "`n"), '(?i)VERSION\s+(\d+\.\d+\.\d+)')
+        if ($match.Success) { return $match.Groups[1].Value }
+    } catch {}
+    return ""
+}
+
+$version = Get-CMakeProjectVersion (Join-Path $repoRoot "CMakeLists.txt")
+if (-not $version) {
+    Write-Host "Could not read project VERSION from CMakeLists.txt; using fallback $FallbackVersion"
+    $version = $FallbackVersion
+}
 try {
     $verInfo = (Get-Item $exePath).VersionInfo
     if ($verInfo.ProductVersion) {

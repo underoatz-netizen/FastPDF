@@ -20,6 +20,29 @@
 #include "pdfium_gate.h"
 #include "pdfium_internal.h"
 
+// Opaque read-only memory-mapped PDF file. Defined in the global namespace to
+// match the forward declaration in the public header. Holds the file/mapping
+// handles and the mapped view; the destructor releases them in the correct
+// order (view, then mapping, then file handle).
+struct MappedPdfFile {
+    HANDLE file = INVALID_HANDLE_VALUE;
+    HANDLE mapping = nullptr;
+    const std::uint8_t* data = nullptr;
+    std::size_t size = 0;
+
+    ~MappedPdfFile() {
+        if (data != nullptr) {
+            UnmapViewOfFile(const_cast<std::uint8_t*>(data));
+        }
+        if (mapping != nullptr) {
+            CloseHandle(mapping);
+        }
+        if (file != INVALID_HANDLE_VALUE) {
+            CloseHandle(file);
+        }
+    }
+};
+
 namespace fastpdf::pdfium {
 
 PdfSource PdfSource::Load(const std::wstring& path, OpenError& error) noexcept {
@@ -28,26 +51,91 @@ PdfSource PdfSource::Load(const std::wstring& path, OpenError& error) noexcept {
         error = OpenError::MissingFile;
         return {};
     }
-    auto bytes = std::make_shared<std::vector<std::uint8_t>>();
-    if (!internal::ReadFileBytes(path, *bytes)) {
+    // Unicode (wide) open with read sharing plus write/delete sharing so the
+    // file is never locked against other readers or replacers.
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                  FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
         error = OpenError::Unreadable;
         return {};
     }
+
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0) {
+        CloseHandle(file);
+        error = OpenError::Unreadable;
+        return {};
+    }
+
+    auto mapped = std::make_shared<MappedPdfFile>();
+    mapped->file = file;
+    mapped->size = static_cast<std::size_t>(size.QuadPart);
+    if (mapped->size == 0) {
+        // Empty file: PDFium reports a format error on load; keep a valid
+        // mapping with a null view (CreateFileMappingW fails on empty files).
+        PdfSource source;
+        source.mapping_ = std::move(mapped);
+        return source;
+    }
+
+    HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0,
+                                        nullptr);
+    if (mapping == nullptr) {
+        error = OpenError::Unreadable;
+        return {};
+    }
+    mapped->mapping = mapping;
+
+    const std::uint8_t* data = static_cast<const std::uint8_t*>(
+        MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0));
+    if (data == nullptr) {
+        error = OpenError::Unreadable;
+        return {};
+    }
+    mapped->data = data;
+
     PdfSource source;
-    source.bytes_ = std::move(bytes);
+    source.mapping_ = std::move(mapped);
     return source;
 }
 
-PdfDocument::PdfDocument(
-    std::shared_ptr<const std::vector<std::uint8_t>> source) noexcept
+const std::uint8_t* PdfSource::data() const noexcept {
+    return mapping_ ? mapping_->data : nullptr;
+}
+
+std::size_t PdfSource::size() const noexcept {
+    return mapping_ ? mapping_->size : 0;
+}
+
+PdfDocument::PdfDocument(PdfSource source) noexcept
     : source_(std::move(source)) {
-    if (!source_) {
+    if (!source_.isValid()) {
         openError_ = OpenError::Unreadable;
         return;
     }
     {
         detail::PdfiumCallGuard guard;
-        document_ = FPDF_LoadMemDocument64(source_->data(), source_->size(),
+        document_ = FPDF_LoadMemDocument64(source_.data(), source_.size(),
+                                           nullptr);
+        if (document_ == nullptr) {
+            openError_ = internal::MapLastError(FPDF_GetLastError());
+        }
+    }
+}
+
+PdfDocument::PdfDocument(
+    std::shared_ptr<const std::vector<std::uint8_t>> source) noexcept
+    : bytes_(std::move(source)) {
+    if (!bytes_) {
+        openError_ = OpenError::Unreadable;
+        return;
+    }
+    {
+        detail::PdfiumCallGuard guard;
+        document_ = FPDF_LoadMemDocument64(bytes_->data(), bytes_->size(),
                                            nullptr);
         if (document_ == nullptr) {
             openError_ = internal::MapLastError(FPDF_GetLastError());
@@ -81,13 +169,14 @@ bool PdfDocument::pageSize(int index, double& widthPoints,
     if (index >= count) {
         return false;
     }
-    FPDF_PAGE page = FPDF_LoadPage(document_, index);
-    if (page == nullptr) {
+    // FPDF_GetPageSizeByIndexF reads the page geometry without loading the
+    // page object, avoiding a per-page FPDF_LoadPage/ClosePage round trip.
+    FS_SIZEF size{};
+    if (!FPDF_GetPageSizeByIndexF(document_, index, &size)) {
         return false;
     }
-    widthPoints = static_cast<double>(FPDF_GetPageWidthF(page));
-    heightPoints = static_cast<double>(FPDF_GetPageHeightF(page));
-    FPDF_ClosePage(page);
+    widthPoints = static_cast<double>(size.width);
+    heightPoints = static_cast<double>(size.height);
     return true;
 }
 

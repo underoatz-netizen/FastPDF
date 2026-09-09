@@ -94,7 +94,7 @@ BatchConversionResult RunPdfToPngBatch(
     }
 
     // Open PDF document
-    fastpdf::pdfium::PdfDocument doc(source.bytes());
+    fastpdf::pdfium::PdfDocument doc(source);
     if (!doc.isOpen()) {
         result.status = BatchResultStatus::InvalidSource;
         result.userErrorMessage = L"Failed to open PDF document.";

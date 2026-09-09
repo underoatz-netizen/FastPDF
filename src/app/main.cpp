@@ -6,11 +6,13 @@
 // stays fully runnable without it.
 
 #include <windows.h>
+#include <shellapi.h>
 
 #include <fastpdf/pdfium/PdfiumLibrary.h>
 #include <fastpdf/platform/win/ComInitializer.h>
 
 #include "AppWindow.h"
+#include "CommandLineOpen.h"
 
 namespace {
 
@@ -23,7 +25,7 @@ void EnablePerMonitorDpiAwareness() noexcept {
 } // namespace
 
 int WINAPI wWinMain([[maybe_unused]] HINSTANCE instance, HINSTANCE /*prevInstance*/,
-                    PWSTR /*commandLine*/, int /*showCommand*/) {
+                    [[maybe_unused]] PWSTR commandLine, int /*showCommand*/) {
     EnablePerMonitorDpiAwareness();
 
     // COM is required by Direct2D/DirectWrite. RAII: uninitialized on exit.
@@ -46,6 +48,26 @@ int WINAPI wWinMain([[maybe_unused]] HINSTANCE instance, HINSTANCE /*prevInstanc
         return 1;
     }
     window.Show();
+
+    // Direct command-line PDF open (file association or explicit launch):
+    // parse the FULL command line from GetCommandLineW(), which always
+    // includes the program name. CommandLineToArgvW unquotes it, so argv[0]
+    // is the executable and argv[1] (when argc >= 2) is the explicit PDF
+    // path with spaces and Unicode preserved. A no-argument launch has
+    // argc == 1 and stays in the normal empty/ready state; the executable is
+    // never opened as a PDF. wWinMain's pCmdLine is intentionally not used:
+    // it excludes the program name, and CommandLineToArgvW("") would return
+    // the executable path as argv[0].
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv != nullptr) {
+        const std::wstring pdfPath =
+            fastpdf::app::PdfPathFromCommandLine(argc, argv);
+        if (!pdfPath.empty()) {
+            window.OpenPathFromCommandLine(pdfPath);
+        }
+        LocalFree(argv);
+    }
 
     MSG message{};
     while (const BOOL result = GetMessageW(&message, nullptr, 0, 0)) {

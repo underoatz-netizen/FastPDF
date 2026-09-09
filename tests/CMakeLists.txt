@@ -34,6 +34,19 @@ target_include_directories(fastpdf_drop_routing_tests PRIVATE
     "${CMAKE_SOURCE_DIR}/src/app")
 add_test(NAME fastpdf_drop_routing_tests COMMAND fastpdf_drop_routing_tests)
 
+# Direct command-line PDF open decision (the full command line puts the
+# executable at argv[0] and the explicit document at argv[1]; a no-argument
+# launch stays empty/ready). PDFium-free; the end-to-end cases use
+# CommandLineToArgvW from shell32.
+add_executable(fastpdf_command_line_open_tests
+    command_line_open_tests.cpp test_harness.h
+    "${CMAKE_SOURCE_DIR}/src/app/CommandLineOpen.cpp"
+    "${CMAKE_SOURCE_DIR}/src/app/CommandLineOpen.h")
+target_include_directories(fastpdf_command_line_open_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/app")
+target_link_libraries(fastpdf_command_line_open_tests PRIVATE shell32)
+add_test(NAME fastpdf_command_line_open_tests COMMAND fastpdf_command_line_open_tests)
+
 # Phase-4 presentation decision logic (keyboard shortcut mapping, page-advance
 # clamping, and the pre-render page set). PDFium-free and Windows-free.
 add_executable(fastpdf_presentation_tests
@@ -69,7 +82,8 @@ add_test(NAME fastpdf_screenshot_clipboard_tests COMMAND fastpdf_screenshot_clip
 
 add_executable(fastpdf_structure_tests structure_tests.cpp test_harness.h)
 target_compile_definitions(fastpdf_structure_tests PRIVATE
-    FASTPDF_EXE_PATH="$<TARGET_FILE:FastPDF>")
+    FASTPDF_EXE_PATH="$<TARGET_FILE:FastPDF>"
+    FASTPDF_PROJECT_VERSION="${PROJECT_VERSION}")
 add_test(NAME fastpdf_structure_tests COMMAND fastpdf_structure_tests)
 
 # Phase-6A PDF to PNG conversion options and naming tests (PDFium-free).

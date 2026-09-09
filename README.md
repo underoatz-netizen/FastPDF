@@ -11,7 +11,7 @@ this repository or run the portable folder that the packaging script produces.
 
 | | |
 | --- | --- |
-| Version | `0.1.0` (`CMakeLists.txt`) |
+| Version | `0.1.1` (`CMakeLists.txt`) |
 | Platform | Windows 10 / 11, **x64 only** |
 | Toolkit | C++20, MSVC v143, Win32, Direct2D, PDFium |
 | Status | Phase 9 — release readiness, performance instrumentation, portable packaging |
@@ -58,7 +58,8 @@ this repository or run the portable folder that the packaging script produces.
 ## What FastPDF does
 
 FastPDF opens a PDF through a native Unicode File Open dialog (**Ctrl+O** or
-**File > Open...**) or by **drag-and-drop**, loads it through the
+**File > Open...**), by **drag-and-drop**, or directly from the command line
+(`FastPDF.exe "path\to\file.pdf"`), loads it through the
 `fastpdf_pdfium` adapter, and renders pages **off the UI thread** into immutable
 CPU BGRA bitmaps that the Direct2D window displays in a **continuous
 single-column layout**.
@@ -144,6 +145,18 @@ If you do not have a build yet, go to [Build from source](#build-from-source).
    Alternatively, **drag and drop** a single PDF onto the window.
 3. The document opens in the continuous layout (Fit Width by default) and the
    status line shows `file.pdf   N / M   Z%` — current page, total pages, zoom.
+
+**Direct command-line open.** You can also open one PDF directly at launch by
+passing its path as the first command-line argument:
+
+    FastPDF.exe "C:\Users\me\My Folder\report.pdf"
+
+The path may contain spaces and Unicode characters; quote it as shown. Only the
+first explicit argument is used as the document to open — any further arguments
+are ignored. Launching `FastPDF.exe` with **no** argument opens the normal empty
+window (ready for **Ctrl+O** or drag-and-drop); it never tries to open the
+executable itself as a PDF. A missing or unreadable path shows the same
+plain-language error as opening it from the dialog (see below).
 
 Dropping a single supported image file (`.png`, `.jpg`, `.jpeg`, `.bmp`) opens
 the Image to PDF dialog instead. Dropping several files starts Image to PDF with
@@ -440,8 +453,8 @@ README describes, the GitHub repository has no published Releases and no tags,
 and `dist/` is not committed. To use FastPDF you must build it from source as
 described above, or run a package that someone built locally.
 
-The version string in this repository is `0.1.0`, and the locally produced
-package name is `FastPDF-0.1.0-win-x64.zip`; that file exists only on the
+The version string in this repository is `0.1.1`, and the locally produced
+package name is `FastPDF-0.1.1-win-x64.zip`; that file exists only on the
 machine that built it.
 
 Draft release-note text for that first release (English and Thai, plus a
@@ -450,8 +463,8 @@ copy/paste block for the GitHub Release description) lives in
 
 ## Tests
 
-`ctest --preset debug` and `ctest --preset release` run **23 tests** when
-PDFium is enabled (**14** of them when it is not, because the PDFium-dependent
+`ctest --preset debug` and `ctest --preset release` run **24 tests** when
+PDFium is enabled (**15** of them when it is not, because the PDFium-dependent
 tests are not built).
 
 | Test | What it verifies | Needs PDFium? |
@@ -465,6 +478,7 @@ tests are not built).
 | `fastpdf_pdfium_render_tests` | Open + first-page render of a generated PDF fixture (page count, fit-to-box dimensions); document info (page count + per-page dimensions of a mixed-size fixture); per-page render at an exact pixel size; missing / corrupted / locked (unreadable) / password-protected error mapping | Yes |
 | `fastpdf_worker_pipeline_tests` | RenderWorker end-to-end through a real window message loop: persistent document open + page count/dimensions, exact-size per-page render, multiple pages against one open document (no re-open), preview vs final sizes, and stale-document-epoch job discard | Yes |
 | `fastpdf_drop_routing_tests` | Drag-and-drop routing predicate (single PDF opens; non-PDF ignored) | No |
+| `fastpdf_command_line_open_tests` | Direct command-line PDF open decision: no-argument launch selects nothing (never the executable), a single explicit path at `argv[1]` is returned verbatim, spaces/Unicode paths are preserved, multiple arguments use only the first, an empty argument is treated as no path, and an end-to-end `CommandLineToArgvW` parse of a realistic full command line selects the document not the executable | No |
 | `fastpdf_presentation_tests` | Phase-4 presentation input mapping (Right/Down/Space/Left/Up/Home/End/Escape/F11, Ctrl reservation), page clamping, and pre-render page set (current/prev/next/next+1 priority ordering and deduplication) | No |
 | `fastpdf_presentation_smoke_tests` | Phase-4 presentation end-to-end smoke: drives the real RenderWorker + window loop to pre-render the presentation page set for a multi-page fixture, verifying cached advance readiness and reporting render timing | Yes |
 | `fastpdf_screenshot_tests` | Phase-5 screenshot selection geometry (normalization, clamping, intersection) and off-screen BGRA compositor (page overlap, multi-page layout spanning, gaps, white background for unrendered/blank areas) | No |
@@ -565,6 +579,15 @@ resolution, document complexity and storage I/O.
 | Idle CPU usage | 0% (no busy-loop / continuous repaint) | 0.0% when idle; `WM_PAINT` on demand |
 | Direct2D frame render time | < 16.6 ms (60 FPS repaint) | ~0.5–2.5 ms draw-call time |
 
+**Benchmark harness.** `scripts/benchmark_startup.ps1` reproduces the
+direct-CLI startup/open/first-frame measurement by launching
+`FastPDF.exe <pdf>` with the `FASTPDF_BENCHMARK` instrumentation enabled and
+collecting the JSON phase output across runs. It measures **FastPDF's own**
+phases only and does **not** compare against other products; any cross-product
+comparison must be run with a matched methodology outside this script. These
+numbers are single-machine observations, not guarantees, and are **not** a claim
+that FastPDF is faster than SumatraPDF or any other viewer.
+
 ## Known limitations
 
 - Rendering is single-threaded by design: one serialized PDFium renderer, with
@@ -573,8 +596,6 @@ resolution, document complexity and storage I/O.
   blocks, and visible pages render at half-size preview quality first.
 - Password-protected PDFs show `This PDF requires a password.` — there is no
   password prompt yet.
-- There is no command-line file argument yet; start the app and use
-  **Ctrl+O** or drag-and-drop.
 - Fit Width / Fit Page in the continuous viewer fit to the **first page** of the
   document.
 - The document is re-parsed only when a different file is opened; one document
@@ -604,17 +625,17 @@ service in this repository.
 1. Pinned PDFium verified with `scripts/verify_pdfium.ps1` against
    `third_party/pdfium/PDFIUM_LOCK.md`.
 2. Debug build with PDFium: `cmake --preset debug` → `cmake --build --preset debug`
-   → `ctest --preset debug` (23/23 tests pass).
+   → `ctest --preset debug` (24/24 tests pass).
 3. Release build with PDFium: `cmake --preset release` →
-   `cmake --build --preset release` → `ctest --preset release` (23/23 tests pass).
+   `cmake --build --preset release` → `ctest --preset release` (24/24 tests pass).
 4. Release build without PDFium: `cmake -B build/release-off -DFASTPDF_WITH_PDFIUM=OFF`
    → `cmake --build build/release-off --config Release`
    → `ctest --test-dir build/release-off -C Release` (13/13 in that recorded run;
-   the configuration now registers 14 cases and has not been re-run since the
-   PDFium-free search-routing test was added).
+   the configuration now registers 15 cases and has not been re-run since the
+   PDFium-free search-routing and command-line-open tests were added).
 5. Portable packaging: `cmake --build --preset release --target fastpdf_package_release`
-   → `dist/FastPDF-0.1.0-win-x64.zip` with a SHA-256 manifest.
-6. Execution smoke: `dist/FastPDF-0.1.0-win-x64/FastPDF.exe` launches, runs and
+   → `dist/FastPDF-0.1.1-win-x64.zip` with a SHA-256 manifest.
+6. Execution smoke: `dist/FastPDF-0.1.1-win-x64/FastPDF.exe` launches, runs and
    terminates cleanly.
 7. Search panel command routing: `fastpdf_search_ui_routing_tests` (4 cases)
    proves the panel swallows its children's `WM_COMMAND` without the forwarder
@@ -634,8 +655,8 @@ template or CI workflow. What the repository does establish:
   attach documents you are not allowed to share: tests use generated fixtures,
   not real files.
 - **Build and test gates** — a change should keep both configurations green:
-  `ctest --preset debug` and `ctest --preset release` with PDFium (23 tests),
-  and the `-DFASTPDF_WITH_PDFIUM=OFF` configuration (14 tests).
+  `ctest --preset debug` and `ctest --preset release` with PDFium (24 tests),
+  and the `-DFASTPDF_WITH_PDFIUM=OFF` configuration (15 tests).
 - **Architecture boundaries** — keep raw PDFium usage inside `src/pdfium/`,
   keep layout math pure in `src/core/`, keep PDFium access on the `RenderWorker`
   thread ([Threading and ownership rules](#threading-and-ownership-rules)).
