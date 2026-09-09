@@ -18,6 +18,7 @@
 
 #include "DropRouting.h"
 #include "Presentation.h"
+#include "SearchPanelRouting.h"
 #include "ScreenshotGeometry.h"
 #include "ScreenshotCompositor.h"
 #include "ScreenshotClipboard.h"
@@ -2077,6 +2078,10 @@ void AppWindow::ShowSearchUI() noexcept {
             WS_CHILD | WS_VISIBLE | WS_BORDER | SS_NOTIFY,
             panelX, panelY, panelW, panelH,
             hwnd_, reinterpret_cast<HMENU>(10100), hInst, nullptr);
+
+        // Forward the panel's child-control commands (search buttons and the
+        // edit box EN_CHANGE) to the main window, which owns search handling.
+        fastpdf::app::search::InstallSearchPanelCommandForwarder(hwndSearchPanel_);
 
         const int pad = fastpdf::platform::win::ScaleForDpi(4, dpi_);
         const int btnW = fastpdf::platform::win::ScaleForDpi(26, dpi_);

@@ -124,6 +124,17 @@ add_executable(fastpdf_search_recent_tests
 target_link_libraries(fastpdf_search_recent_tests PRIVATE fastpdf_core)
 add_test(NAME fastpdf_search_recent_tests COMMAND fastpdf_search_recent_tests)
 
+# Phase-8 Search panel WM_COMMAND routing (close/prev/next buttons and edit
+# EN_CHANGE must reach the main window through the STATIC panel). Win32-only,
+# PDFium-free; compiles only the search panel forwarder.
+add_executable(fastpdf_search_ui_routing_tests
+    search_ui_routing_tests.cpp test_harness.h
+    "${CMAKE_SOURCE_DIR}/src/app/SearchPanelRouting.cpp"
+    "${CMAKE_SOURCE_DIR}/src/app/SearchPanelRouting.h")
+target_include_directories(fastpdf_search_ui_routing_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/app")
+add_test(NAME fastpdf_search_ui_routing_tests COMMAND fastpdf_search_ui_routing_tests)
+
 # Phase-8 Search PDFium integration tests (requires PDFium)
 if(FASTPDF_WITH_PDFIUM)
     add_executable(fastpdf_search_pdfium_integration_tests

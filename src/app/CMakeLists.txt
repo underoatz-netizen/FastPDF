@@ -16,6 +16,8 @@ add_executable(FastPDF WIN32
     DropRouting.cpp
     Presentation.h
     Presentation.cpp
+    SearchPanelRouting.h
+    SearchPanelRouting.cpp
     ScreenshotGeometry.h
     ScreenshotCompositor.h
     ScreenshotCompositor.cpp
