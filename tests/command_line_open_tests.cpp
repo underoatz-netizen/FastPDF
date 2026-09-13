@@ -89,6 +89,38 @@ FASTPDF_TEST(full_command_line_parse_selects_document) {
     LocalFree(argv);
 }
 
+// End-to-end: the EXACT command shape a real Windows file association builds
+// from a "shell\open\command" value of "...FastPDF.exe" "%1". The executable
+// path itself contains spaces (a "Program Files"/dist-style install directory)
+// AND the document path contains spaces plus Thai Unicode. This is the genuine
+// Explorer double-click case (verified against the live registry association on
+// the affected machine). CommandLineToArgvW must yield argc == 2 with the fully
+// unquoted document at argv[1]; the decision must select that document, never
+// the executable and never a space-split fragment of the path.
+FASTPDF_TEST(association_command_line_selects_document) {
+    // "E:\Projects\OZ PDF Viewer\dist\FastPDF-0.1.1-win-x64\FastPDF.exe"
+    const wchar_t* exe =
+        L"E:\\Projects\\OZ PDF Viewer\\dist\\FastPDF-0.1.1-win-x64\\FastPDF.exe";
+    // C:\Users\USER\AppData\Local\Temp\FastPDF Assoc Test\รายงาน ทดสอบ 1.pdf
+    const wchar_t* doc =
+        L"C:\\Users\\USER\\AppData\\Local\\Temp\\FastPDF Assoc Test\\"
+        L"\u0e23\u0e32\u0e22\u0e07\u0e32\u0e19 \u0e17\u0e14\u0e2a\u0e2d\u0e1a 1.pdf";
+    const std::wstring cmdLine =
+        std::wstring(L"\"") + exe + L"\"" + L" \"" + doc + L"\"";
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(cmdLine.c_str(), &argc);
+    FASTPDF_CHECK(argv != nullptr);
+    if (argv == nullptr) {
+        return;
+    }
+    // The spaces inside both quoted tokens must NOT split into extra argv.
+    FASTPDF_CHECK_EQ(argc, 2);
+    FASTPDF_CHECK_EQ(std::wstring(argv[0]), std::wstring(exe));
+    FASTPDF_CHECK_EQ(fastpdf::app::PdfPathFromCommandLine(argc, argv),
+                     std::wstring(doc));
+    LocalFree(argv);
+}
+
 // End-to-end: the no-argument shape of a full command line (executable only)
 // selects no document. This is the case the old pCmdLine indexing got wrong:
 // CommandLineToArgvW("") returns the executable as argv[0], but a full command

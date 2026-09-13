@@ -58,10 +58,33 @@ constexpr UINT_PTR kIdToggleDiagnostics = 1200;
 
 const D2D1_COLOR_F kBackgroundColor = D2D1::ColorF(0.11f, 0.11f, 0.12f, 1.0f);
 const D2D1_COLOR_F kStatusColor = D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f);
+// Muted secondary tone for the status line's right-aligned metadata so the
+// document name and page/zoom read as a clear two-level hierarchy.
+const D2D1_COLOR_F kStatusMutedColor = D2D1::ColorF(0.62f, 0.62f, 0.66f, 1.0f);
 const D2D1_COLOR_F kErrorColor = D2D1::ColorF(0.95f, 0.55f, 0.55f, 1.0f);
 const D2D1_COLOR_F kPresentationBackground = D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f);
 const D2D1_COLOR_F kSearchHighlightColor = D2D1::ColorF(1.0f, 0.9f, 0.0f, 0.35f); // yellow translucent
 const D2D1_COLOR_F kSearchActiveHighlightColor = D2D1::ColorF(1.0f, 0.55f, 0.0f, 0.60f); // orange translucent
+
+// Find-panel design tokens (logical pixels, DPI-scaled when the panel is
+// created). One spacing rhythm keeps the edit / count / buttons aligned and
+// gives the controls comfortable breathing room.
+constexpr int kFindPanelW = 380;
+constexpr int kFindPanelH = 40;
+constexpr int kFindPad = 6;
+constexpr int kFindGap = 6;
+constexpr int kFindEditW = 180;
+constexpr int kFindCountW = 72;
+constexpr int kFindButtonW = 30;
+constexpr int kFindFontPt = 14;
+// Top offset clears the status line (drawn at a 16 px inset) so the right-
+// aligned page / zoom metadata is never covered by the panel.
+constexpr int kFindOffsetY = 44;
+constexpr int kFindOffsetRight = 30;  // gap from the client right edge
+
+// EM_SETCUEBANNER (comctl32 v6 edit placeholder text). Sent directly so the
+// app does not need to link the common-controls SDK for one message.
+constexpr WPARAM kEditSetCueBanner = 0x1501;
 
 // Converts a UTF-8 narrow string to a wide string.
 std::wstring Utf8ToWide(std::string_view text) {
@@ -95,6 +118,13 @@ std::wstring ExecutableDirectory() {
     return path.substr(0, slash);
 }
 
+// Returns the final path component for the status line, keeping the chrome
+// readable when the document lives in a deep directory tree.
+std::wstring FileNameFromPath(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+
 // Computes the render pixel size for a laid-out page, guarding against pixel
 // overflow and enforcing the hard dimension bounds (aspect-preserving).
 fastpdf::renderer::PixelSize ComputeRenderSize(double width, double height) noexcept {
@@ -123,11 +153,21 @@ AppWindow::~AppWindow() {
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
+    // The find-panel GUI font is owned here and outlives the controls; release
+    // it after the window (and its children) are destroyed.
+    if (searchFont_ != nullptr) {
+        DeleteObject(searchFont_);
+        searchFont_ = nullptr;
+    }
 }
 
 bool AppWindow::Create(const wchar_t* title) noexcept {
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
+    // Receive WM_LBUTTONDBLCLK for the page-content fit gesture. This changes
+    // only how consecutive clicks are reported; single-click handling is
+    // unaffected.
+    wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = &AppWindow::WindowProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
@@ -280,6 +320,18 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) noe
                 }
             } else {
                 OnLeftButtonDown();
+            }
+            return 0;
+        }
+        case WM_LBUTTONDBLCLK: {
+            // Double-clicking directly on rendered page content fits the page
+            // to the viewport. Skip the gesture while screenshot selection or
+            // the Save-PNG toast is active; OnPageDoubleClick also ignores
+            // presentation mode and non-Ready states.
+            if (!screenshotActive_ && !toastVisible_) {
+                const int x = static_cast<short>(LOWORD(lParam));
+                const int y = static_cast<short>(HIWORD(lParam));
+                OnPageDoubleClick(x, y);
             }
             return 0;
         }
@@ -474,8 +526,12 @@ void AppWindow::OnDpiChanged(UINT dpi, const RECT& suggestedRect) noexcept {
                  suggestedRect.right - suggestedRect.left,
                  suggestedRect.bottom - suggestedRect.top,
                  SWP_NOZORDER | SWP_NOACTIVATE);
-    // The text format is DPI-dependent; recreate it on the next paint.
+    // The text formats are DPI-dependent; recreate them on the next paint.
     statusTextFormat_.Reset();
+    statusMetaTextFormat_.Reset();
+    // If the find panel is open, rescale/reposition its controls and refresh
+    // the GUI font so it keeps the DPI-scaled geometry on a live transition.
+    LayoutSearchPanel();
     if (presenting_) {
         if (state_ == ViewState::Ready) {
             RebuildPresentationLayout();
@@ -707,6 +763,27 @@ void AppWindow::OnLeftButtonDown() noexcept {
     if (presenting_) {
         PresentationNext();
     }
+}
+
+void AppWindow::OnPageDoubleClick(int x, int y) noexcept {
+    if (presenting_ || state_ != ViewState::Ready || !layout_.has_value()) {
+        return;
+    }
+    // Viewport client coordinates -> content space; only a point directly over
+    // a page box triggers the fit. Clicks on the margin beside a page or in the
+    // gap between pages resolve to -1 and are ignored.
+    const double contentX = scrollX_ + static_cast<double>(x);
+    const double contentY = scrollY_ + static_cast<double>(y);
+    const int page = layout_->pageAtContentPoint(contentX, contentY);
+    if (page < 0) {
+        return;  // Outside page content: no action (no log, no repaint).
+    }
+    Log(L"Double-click fit: page " + std::to_wstring(page + 1) + L" at client (" +
+        std::to_wstring(x) + L", " + std::to_wstring(y) + L")");
+    // Reuse the existing Fit Page command/state (same zoom math, anchor
+    // handling, cache invalidation and status refresh as Ctrl+0 / View > Fit
+    // Page) rather than duplicating a fit calculation here.
+    SetFitMode(fastpdf::core::layout::FitMode::FitPage);
 }
 
 void AppWindow::EnterPresentation() noexcept {
@@ -1870,19 +1947,23 @@ void AppWindow::UpdateStatusText() noexcept {
     const int current = CurrentPageIndex() + 1;
     const int total = layout_->pageCount();
     const int zoom = static_cast<int>(std::lround(zoomPercent_));
-    statusText_ = currentPath_ + L"   " + std::to_wstring(current) + L" / " +
-                  std::to_wstring(total) + L"   " + std::to_wstring(zoom) +
-                  L"%";
+    statusMeta_ = std::to_wstring(current) + L" / " + std::to_wstring(total) +
+                  L"   " + std::to_wstring(zoom) + L"%";
 
     if (diagnosticsEnabled_) {
         const std::size_t cacheKB = cpuCache_.currentBytes() / 1024;
         const double hitRate = cpuCache_.hitRate() * 100.0;
         const std::size_t qDepth = worker_.pendingQueueDepth();
-        statusText_ += L"   [DIAG: Q=" + std::to_wstring(qDepth) +
+        statusMeta_ += L"   [DIAG: Q=" + std::to_wstring(qDepth) +
                        L" Cache=" + std::to_wstring(cacheKB) + L"KB (" +
                        std::to_wstring(static_cast<int>(hitRate)) + L"%) " +
                        L"Frame=" + std::to_wstring(static_cast<int>(lastFrameTimeMs_)) + L"ms]";
     }
+
+    // Keep the documented single-line "file   N / M   Z%" shape for non-Ready
+    // states and for the diagnostic log; the Ready paint uses the split
+    // title/meta form for a clean left / right status line.
+    statusText_ = currentPath_ + L"   " + statusMeta_;
 }
 
 bool AppWindow::EnsureDeviceResources() noexcept {
@@ -1905,6 +1986,17 @@ bool AppWindow::EnsureDeviceResources() noexcept {
             return false;
         }
     }
+    if (statusMetaTextFormat_ == nullptr) {
+        const float fontSize = fastpdf::platform::win::DpiScaleFactor(dpi_) * 16.0f;
+        if (FAILED(dwriteFactory_->CreateTextFormat(
+                L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                fontSize, L"en-US", &statusMetaTextFormat_))) {
+            return false;
+        }
+        // Right-align the page / zoom metadata within the shared status rect.
+        statusMetaTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING);
+    }
     if (renderTarget_ == nullptr) {
         RECT client{};
         GetClientRect(hwnd_, &client);
@@ -1918,6 +2010,11 @@ bool AppWindow::EnsureDeviceResources() noexcept {
     }
     if (statusBrush_ == nullptr) {
         if (FAILED(renderTarget_->CreateSolidColorBrush(kStatusColor, &statusBrush_))) {
+            return false;
+        }
+    }
+    if (statusMetaBrush_ == nullptr) {
+        if (FAILED(renderTarget_->CreateSolidColorBrush(kStatusMutedColor, &statusMetaBrush_))) {
             return false;
         }
     }
@@ -1943,9 +2040,11 @@ void AppWindow::DiscardDeviceResources() noexcept {
     d2dBitmaps_.clear();  // Device-dependent; re-uploaded from CPU bitmaps.
     errorBrush_.Reset();
     statusBrush_.Reset();
+    statusMetaBrush_.Reset();
     searchHighlightBrush_.Reset();
     searchActiveHighlightBrush_.Reset();
     statusTextFormat_.Reset();
+    statusMetaTextFormat_.Reset();
     renderTarget_.Reset();
     toastBgBrush_.Reset();
     toastTextBrush_.Reset();
@@ -2051,6 +2150,31 @@ void AppWindow::DrawStatusText(ID2D1HwndRenderTarget& target) noexcept {
         return;
     }
 
+    const D2D1_SIZE_F size = target.GetSize();
+    const float margin = fastpdf::platform::win::DpiScaleFactor(dpi_) * 16.0f;
+    const D2D1_RECT_F layout =
+        D2D1::RectF(margin, margin, size.width - margin, size.height - margin);
+
+    if (state_ == ViewState::Ready) {
+        // Two-level status line: document name leading on the left, page / zoom
+        // (and the optional diagnostics readout) right-aligned on the same
+        // baseline in a muted tone. Same font size for both runs keeps them
+        // aligned; only position and colour carry the hierarchy.
+        const std::wstring title = FileNameFromPath(currentPath_);
+        if (!title.empty()) {
+            target.DrawText(title.c_str(), static_cast<UINT32>(title.size()),
+                            statusTextFormat_.Get(), layout, statusBrush_.Get());
+        }
+        if (statusMetaTextFormat_ != nullptr && statusMetaBrush_ != nullptr &&
+            !statusMeta_.empty()) {
+            target.DrawText(statusMeta_.c_str(),
+                            static_cast<UINT32>(statusMeta_.size()),
+                            statusMetaTextFormat_.Get(), layout,
+                            statusMetaBrush_.Get());
+        }
+        return;
+    }
+
     std::wstring text;
     ID2D1SolidColorBrush* brush = statusBrush_.Get();
     switch (state_) {
@@ -2063,18 +2187,12 @@ void AppWindow::DrawStatusText(ID2D1HwndRenderTarget& target) noexcept {
             brush = errorBrush_.Get();
             break;
         case ViewState::Ready:
-            text = statusText_;
-            break;
+            return;  // handled above
     }
 
     if (text.empty() || brush == nullptr) {
         return;
     }
-
-    const D2D1_SIZE_F size = target.GetSize();
-    const float margin = fastpdf::platform::win::DpiScaleFactor(dpi_) * 16.0f;
-    const D2D1_RECT_F layout =
-        D2D1::RectF(margin, margin, size.width - margin, size.height - margin);
     target.DrawText(text.c_str(), static_cast<UINT32>(text.size()),
                     statusTextFormat_.Get(), layout, brush);
 }
@@ -2169,92 +2287,161 @@ LRESULT CALLBACK SearchEditSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
 } // namespace
 
+void AppWindow::LayoutSearchPanel() noexcept {
+    if (hwndSearchPanel_ == nullptr) {
+        return;
+    }
+
+    // Panel: DPI-scaled size, right-aligned below the status line so the
+    // page / zoom metadata stays uncovered.
+    const int panelW = fastpdf::platform::win::ScaleForDpi(kFindPanelW, dpi_);
+    const int panelH = fastpdf::platform::win::ScaleForDpi(kFindPanelH, dpi_);
+    const int vpW = static_cast<int>(ViewportWidth());
+    const int panelX = std::max(
+        fastpdf::platform::win::ScaleForDpi(10, dpi_),
+        vpW - panelW -
+            fastpdf::platform::win::ScaleForDpi(kFindOffsetRight, dpi_));
+    const int panelY = fastpdf::platform::win::ScaleForDpi(kFindOffsetY, dpi_);
+    SetWindowPos(hwndSearchPanel_, nullptr, panelX, panelY, panelW, panelH,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+
+    // Children: same padding/gap rhythm used at creation (child coordinates are
+    // relative to the panel).
+    const int pad = fastpdf::platform::win::ScaleForDpi(kFindPad, dpi_);
+    const int gap = fastpdf::platform::win::ScaleForDpi(kFindGap, dpi_);
+    const int btnW = fastpdf::platform::win::ScaleForDpi(kFindButtonW, dpi_);
+    const int editW = fastpdf::platform::win::ScaleForDpi(kFindEditW, dpi_);
+    const int countW = fastpdf::platform::win::ScaleForDpi(kFindCountW, dpi_);
+    const int ctrlH = panelH - pad * 2;
+
+    int curX = pad;
+    if (hwndSearchEdit_ != nullptr) {
+        SetWindowPos(hwndSearchEdit_, nullptr, curX, pad, editW, ctrlH,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    curX += editW + gap;
+    if (hwndSearchCount_ != nullptr) {
+        SetWindowPos(hwndSearchCount_, nullptr, curX, pad, countW, ctrlH,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    curX += countW + gap;
+    if (hwndSearchPrev_ != nullptr) {
+        SetWindowPos(hwndSearchPrev_, nullptr, curX, pad, btnW, ctrlH,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    curX += btnW + gap;
+    if (hwndSearchNext_ != nullptr) {
+        SetWindowPos(hwndSearchNext_, nullptr, curX, pad, btnW, ctrlH,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    curX += btnW + gap;
+    if (hwndSearchClose_ != nullptr) {
+        SetWindowPos(hwndSearchClose_, nullptr, curX, pad, btnW, ctrlH,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    // The GUI font height is DPI-dependent. Recreate it only when the DPI
+    // actually changes (never on a simple reposition) and delete the old one.
+    const bool dpiChanged =
+        (searchFont_ != nullptr && searchFontDpi_ != dpi_);
+    if (searchFont_ == nullptr || dpiChanged) {
+        if (searchFont_ != nullptr) {
+            DeleteObject(searchFont_);
+            searchFont_ = nullptr;
+        }
+        searchFont_ = CreateFontW(
+            -fastpdf::platform::win::ScaleForDpi(kFindFontPt, dpi_), 0, 0, 0,
+            FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        searchFontDpi_ = dpi_;
+        if (dpiChanged) {
+            // Instrumentation for the live WM_DPICHANGED path (manual
+            // multi-monitor verification leaves this in logs/).
+            Log(L"Find panel rescaled for DPI " + std::to_wstring(dpi_) +
+                L" (panel " + std::to_wstring(panelW) + L"x" +
+                std::to_wstring(panelH) + L")");
+        }
+    }
+
+    if (searchFont_ != nullptr) {
+        SendMessageW(hwndSearchEdit_, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(searchFont_), TRUE);
+        SendMessageW(hwndSearchCount_, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(searchFont_), TRUE);
+        SendMessageW(hwndSearchPrev_, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(searchFont_), TRUE);
+        SendMessageW(hwndSearchNext_, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(searchFont_), TRUE);
+        SendMessageW(hwndSearchClose_, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(searchFont_), TRUE);
+    }
+}
+
 void AppWindow::ShowSearchUI() noexcept {
     if (presenting_ || state_ != ViewState::Ready) {
         return;
     }
 
     if (hwndSearchPanel_ == nullptr) {
-        // Create search panel window
+        // Create the find panel and its child controls. Geometry and the GUI
+        // font are applied by LayoutSearchPanel() below, which is the single
+        // DPI-scaled source of truth shared with live WM_DPICHANGED handling.
         HINSTANCE hInst = GetModuleHandleW(nullptr);
-        const int panelW = fastpdf::platform::win::ScaleForDpi(360, dpi_);
-        const int panelH = fastpdf::platform::win::ScaleForDpi(36, dpi_);
-        const int vpW = static_cast<int>(ViewportWidth());
-        const int panelX = std::max(10, vpW - panelW - 30);
-        const int panelY = 10;
+        const int panelW = fastpdf::platform::win::ScaleForDpi(kFindPanelW, dpi_);
+        const int panelH = fastpdf::platform::win::ScaleForDpi(kFindPanelH, dpi_);
 
         hwndSearchPanel_ = CreateWindowExW(
             WS_EX_TOPMOST, L"STATIC", nullptr,
             WS_CHILD | WS_VISIBLE | WS_BORDER | SS_NOTIFY,
-            panelX, panelY, panelW, panelH,
+            0, 0, panelW, panelH,
             hwnd_, reinterpret_cast<HMENU>(10100), hInst, nullptr);
 
         // Forward the panel's child-control commands (search buttons and the
         // edit box EN_CHANGE) to the main window, which owns search handling.
         fastpdf::app::search::InstallSearchPanelCommandForwarder(hwndSearchPanel_);
 
-        const int pad = fastpdf::platform::win::ScaleForDpi(4, dpi_);
-        const int btnW = fastpdf::platform::win::ScaleForDpi(26, dpi_);
-        const int editW = fastpdf::platform::win::ScaleForDpi(160, dpi_);
-        const int countW = fastpdf::platform::win::ScaleForDpi(70, dpi_);
-        const int ctrlH = panelH - pad * 2 - 2;
-
-        int curX = pad;
         hwndSearchEdit_ = CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            curX, pad, editW, ctrlH,
-            hwnd_, reinterpret_cast<HMENU>(10101), hInst, nullptr);
+            0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(10101), hInst, nullptr);
         SetParent(hwndSearchEdit_, hwndSearchPanel_);
-        curX += editW + pad;
+        // Lightweight placeholder so the empty panel reads as a search field.
+        SendMessageW(hwndSearchEdit_, kEditSetCueBanner,
+                     static_cast<WPARAM>(TRUE),
+                     reinterpret_cast<LPARAM>(L"Find in document"));
 
         hwndSearchCount_ = CreateWindowExW(
             0, L"STATIC", L"0 / 0",
             WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
-            curX, pad, countW, ctrlH,
-            hwnd_, reinterpret_cast<HMENU>(10102), hInst, nullptr);
+            0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(10102), hInst, nullptr);
         SetParent(hwndSearchCount_, hwndSearchPanel_);
-        curX += countW + pad;
 
         hwndSearchPrev_ = CreateWindowExW(
             0, L"BUTTON", L"<",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            curX, pad, btnW, ctrlH,
-            hwnd_, reinterpret_cast<HMENU>(kIdSearchPrev), hInst, nullptr);
+            0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(kIdSearchPrev), hInst, nullptr);
         SetParent(hwndSearchPrev_, hwndSearchPanel_);
-        curX += btnW + pad;
 
         hwndSearchNext_ = CreateWindowExW(
             0, L"BUTTON", L">",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            curX, pad, btnW, ctrlH,
-            hwnd_, reinterpret_cast<HMENU>(kIdSearchNext), hInst, nullptr);
+            0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(kIdSearchNext), hInst, nullptr);
         SetParent(hwndSearchNext_, hwndSearchPanel_);
-        curX += btnW + pad;
 
         hwndSearchClose_ = CreateWindowExW(
             0, L"BUTTON", L"X",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            curX, pad, btnW, ctrlH,
-            hwnd_, reinterpret_cast<HMENU>(kIdSearchClose), hInst, nullptr);
+            0, 0, 0, 0, hwnd_, reinterpret_cast<HMENU>(kIdSearchClose), hInst, nullptr);
         SetParent(hwndSearchClose_, hwndSearchPanel_);
 
         // Subclass Edit control to handle Enter and Esc
         g_originalEditProc = reinterpret_cast<WNDPROC>(
             SetWindowLongPtrW(hwndSearchEdit_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(SearchEditSubclassProc)));
 
-        // Set standard GUI font
-        if (searchFont_ == nullptr) {
-            searchFont_ = CreateFontW(-fastpdf::platform::win::ScaleForDpi(13, dpi_), 0, 0, 0,
-                                      FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                      DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        }
-        SendMessageW(hwndSearchEdit_, WM_SETFONT, reinterpret_cast<WPARAM>(searchFont_), TRUE);
-        SendMessageW(hwndSearchCount_, WM_SETFONT, reinterpret_cast<WPARAM>(searchFont_), TRUE);
-        SendMessageW(hwndSearchPrev_, WM_SETFONT, reinterpret_cast<WPARAM>(searchFont_), TRUE);
-        SendMessageW(hwndSearchNext_, WM_SETFONT, reinterpret_cast<WPARAM>(searchFont_), TRUE);
-        SendMessageW(hwndSearchClose_, WM_SETFONT, reinterpret_cast<WPARAM>(searchFont_), TRUE);
+        // Position the panel and all controls for the current DPI and apply the
+        // GUI font (OnDpiChanged re-applies this on a live DPI transition).
+        LayoutSearchPanel();
     } else {
         ShowWindow(hwndSearchPanel_, SW_SHOW);
     }

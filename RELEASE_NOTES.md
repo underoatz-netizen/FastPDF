@@ -10,17 +10,45 @@ description field.
 
 | | |
 | --- | --- |
-| Version in this repository | `0.1.1` (`CMakeLists.txt`, embedded as the file/product version) |
+| Version in this repository | `0.2.0` (`CMakeLists.txt`, embedded as the file/product version) |
 | Published GitHub Releases | **None.** The repository currently has no published Releases and no tags |
 | Published release assets | **None.** No binaries are attached and `dist/` is excluded by [`.gitignore`](.gitignore) |
-| Expected asset once a release is created | `FastPDF-0.1.1-win-x64.zip`, built locally with [`scripts/package_release.ps1`](scripts/package_release.ps1) or `cmake --build --preset release --target fastpdf_package_release` |
-| Tag name proposed for that release | `v0.1.1` (planned — not created yet) |
+| Expected asset once a release is created | `FastPDF-0.2.0-win-x64.zip`, built locally with [`scripts/package_release.ps1`](scripts/package_release.ps1) or `cmake --build --preset release --target fastpdf_package_release` |
+| Tag name proposed for that release | `v0.2.0` (planned — not created yet) |
 
 Everything below is therefore **draft release text**: the facts about the
 software are supported by the repository, while the asset itself does not exist
 on GitHub until someone builds it, creates the Release and attaches the ZIP.
 
-## v0.1.1 at a glance
+## What's new in 0.2.0
+
+This is a minor release over `0.1.1`. It adds the modern-UI and per-monitor DPI
+work, the double-click-to-Fit-Page gesture, and the release-scope command-line
+open, and it changes no dependency or product scope.
+
+- **Modern native UI** — the executable now opts into the Windows
+  common-controls v6 visual styles, so the menus, find-panel edit/buttons and
+  scrollbars are drawn with the current Windows theme, including their
+  built-in hover / focus / pressed states. This is an OS component, not a new
+  third-party dependency.
+- **Completed per-monitor DPI support** — the find panel and its controls
+  rescale and reposition live when the window moves to a monitor with a
+  different DPI, the control font is recreated only when the height changes,
+  and the status line is rebuilt for the new DPI. The status line now reads as
+  two levels: the document name leads on the left while page / zoom (and the
+  optional diagnostics readout) is right-aligned in a muted tone.
+- **Double-click a page to Fit Page** — double-clicking directly on rendered
+  page content fits that page to the viewport, reusing the existing Fit Page
+  command (`Ctrl+0`). A double-click on the margin beside a page, in the gap
+  between pages, in presentation mode or during screenshot capture does
+  nothing.
+- **Command-line / file-association open, verified** — `FastPDF.exe
+  "C:\path\to\file.pdf"` opens the document directly. An end-to-end test now
+  reproduces the exact Explorer `shell\open\command` shape: an executable path
+  containing spaces, plus a document path containing spaces and Thai Unicode.
+  The path is never split and the executable is never opened as a document.
+
+## v0.2.0 at a glance
 
 - **What it is:** a lightweight, fast, minimal Windows PDF viewer — Win32 +
   Direct2D + PDFium, continuous single-column reading, rendering off the UI
@@ -39,8 +67,8 @@ on GitHub until someone builds it, creates the Release and attaches the ZIP.
 
 ## Copy/paste text for the GitHub Release description
 
-- Suggested **tag**: `v0.1.1` (create it on the commit you are releasing).
-- Suggested **release title**: `FastPDF 0.1.1 (Windows x64)`.
+- Suggested **tag**: `v0.2.0` (create it on the commit you are releasing).
+- Suggested **release title**: `FastPDF 0.2.0 (Windows x64)`.
 
 Paste the block below into the release description. It uses absolute links so it
 renders correctly outside the repository file view, and indented code blocks so
@@ -48,10 +76,12 @@ the whole block stays copyable as one piece. Replace nothing except the parts
 that describe assets you did not attach.
 
 ```markdown
-**FastPDF 0.1.1** is the first release of a lightweight, fast, minimal Windows
-PDF viewer built with Win32 + Direct2D + PDFium.
+**FastPDF 0.2.0** is a minor update to a lightweight, fast, minimal Windows
+PDF viewer built with Win32 + Direct2D + PDFium. It adds a modern native UI,
+completed per-monitor DPI handling, double-click-to-Fit-Page and verified
+command-line / file-association open; it is the successor to 0.1.1.
 
-> **Assets:** attach `FastPDF-0.1.1-win-x64.zip` only after it has been produced
+> **Assets:** attach `FastPDF-0.2.0-win-x64.zip` only after it has been produced
 > locally by [`scripts/package_release.ps1`](https://github.com/underoatz-netizen/FastPDF/blob/master/scripts/package_release.ps1).
 > If no asset is attached to this release, FastPDF is available as source code
 > only — see the build instructions in the
@@ -75,15 +105,26 @@ PDF viewer built with Win32 + Direct2D + PDFium.
    Unicode; quote it as shown).
 4. To move or remove the app, move or delete the folder.
 
-## What is included in 0.1.1
+## What is included in 0.2.0
 
 - **Continuous PDF viewing** — single-column layout, pages rendered off the UI
   thread into CPU bitmaps and displayed with Direct2D; half-size preview first,
   then final quality.
+- **Modern native UI** — Windows common-controls v6 visual styles are enabled,
+  so menus, find-panel controls and scrollbars use the current Windows theme and
+  its hover / focus / pressed states; the status line shows the document name on
+  the left and page / zoom right-aligned in a muted tone.
+- **Per-monitor DPI** — the window, status line and find panel follow the DPI of
+  the monitor the window is on, re-laying out live on a DPI transition instead
+  of only at startup.
+- **Double-click to Fit Page** — double-clicking on rendered page content fits
+  that page to the viewport (the Fit Page command); clicks on the margin or the
+  inter-page gap are ignored.
 - **Direct command-line open** — pass one PDF path as the first argument
-  (`FastPDF.exe "path\to\file.pdf"`); spaces and Unicode are supported. A
-  no-argument launch opens the normal empty window and never tries to open the
-  executable itself as a PDF.
+  (`FastPDF.exe "path\to\file.pdf"`); spaces and Unicode are supported, including
+  the exact Explorer file-association command shape. A no-argument launch opens
+  the normal empty window and never tries to open the executable itself as a
+  PDF.
 - **Zoom and page anchor** — Fit Width, Fit Page, 100%, free zoom clamped to
   25%-800%, cursor-centered Ctrl+mouse-wheel zoom, and a page anchor that keeps
   the logical location across zoom, window resize and per-monitor DPI changes.
@@ -137,7 +178,7 @@ PDF viewer built with Win32 + Direct2D + PDFium.
 The package is produced from a Release build; `MANIFEST.txt` lets you verify the
 files with `Get-FileHash`.
 
-## Known limitations in 0.1.1
+## Known limitations in 0.2.0
 
 - Password-protected PDFs show `This PDF requires a password.` — there is no
   password prompt yet.
@@ -197,7 +238,7 @@ accompany any redistribution of `pdfium.dll`.
 - Do not paste a download URL by hand — GitHub generates the asset link when the
   file is attached.
 - Do not claim a checksum for the ZIP in advance; publish the hash only after the
-  asset exists: `Get-FileHash .\dist\FastPDF-0.1.1-win-x64.zip -Algorithm SHA256`.
+  asset exists: `Get-FileHash .\dist\FastPDF-0.2.0-win-x64.zip -Algorithm SHA256`.
 - The version string comes from `CMakeLists.txt`; bump it there before building
   the next package so the ZIP name and `MANIFEST.txt` stay consistent.
 - Commit and push this documentation first: the Thai release body links to

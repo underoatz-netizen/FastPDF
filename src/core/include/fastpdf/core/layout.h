@@ -114,6 +114,14 @@ public:
     // clamp to the first/last page.
     int pageAtContentY(double y) const noexcept;
 
+    // The page whose laid-out box contains the content-space point (|x|, |y|),
+    // or -1 when the point is not directly over page content: in the horizontal
+    // margin beside a page, in the vertical gap between pages, or outside the
+    // document. Unlike pageAtContentY this check is two-dimensional, so input
+    // handling can distinguish a click on the page from a click on the
+    // surrounding background/gap.
+    int pageAtContentPoint(double x, double y) const noexcept;
+
     // The inclusive page range [first, last] visible in a viewport whose top
     // is at content-space |scrollY| and that is |viewportHeight| tall. Returns
     // {-1, -1} when nothing is visible (cannot happen with a valid layout and

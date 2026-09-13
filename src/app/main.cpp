@@ -14,6 +14,13 @@
 #include "AppWindow.h"
 #include "CommandLineOpen.h"
 
+// Opt into the OS-native visual styles (comctl32 v6) so the standard Win32
+// viewer chrome - menus, find-panel edit/static/buttons and scrollbars - is
+// drawn with current Windows theming and exposes its built-in hover / focus /
+// pressed states. This is an OS component (already present on Windows), not an
+// added third-party dependency, and it changes only appearance, not behaviour.
+#pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
 namespace {
 
 // Per-monitor DPI awareness (Windows 10 1607+). Must be called before any

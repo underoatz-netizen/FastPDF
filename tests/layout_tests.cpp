@@ -208,6 +208,45 @@ FASTPDF_TEST(page_at_content_y_clamps_out_of_range) {
     FASTPDF_CHECK_EQ(layout->pageAtContentY(1e9), 3);
 }
 
+// ---------------------------------------------------------------------------
+// Direct page-content hit test (double-click-to-fit gesture)
+// ---------------------------------------------------------------------------
+
+FASTPDF_TEST(page_at_content_point_hits_each_page_box) {
+    const auto layout = ContinuousLayout::Create(MixedPages(), 1.0, 10.0);
+    FASTPDF_CHECK(layout.has_value());
+    // Page 0: 306..918 x 0..792 -> center (612, 396).
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(612.0, 396.0), 0);
+    // Page 1: 216..1008 x 802..1414 -> center (612, 1108).
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(612.0, 1108.0), 1);
+    // Page 2: 462..762 x 1424..1824 -> center (612, 1624).
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(612.0, 1624.0), 2);
+    // Page 3: 0..1224 x 1834..3418 -> center (612, 2626).
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(612.0, 2626.0), 3);
+}
+
+FASTPDF_TEST(page_at_content_point_rejects_gap_and_margin) {
+    const auto layout = ContinuousLayout::Create(MixedPages(), 1.0, 10.0);
+    FASTPDF_CHECK(layout.has_value());
+    // Vertical gap between page 0 (ends 792) and page 1 (starts 802): even
+    // though pageAtContentY would report page 0, a direct hit must miss.
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(612.0, 797.0), -1);
+    // Horizontal margin to the left of page 0 (its left edge is 306).
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(100.0, 396.0), -1);
+    // Horizontal margin to the right of page 0 (its right edge is 918).
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(1000.0, 396.0), -1);
+}
+
+FASTPDF_TEST(page_at_content_point_rejects_outside_document) {
+    const auto layout = ContinuousLayout::Create(MixedPages(), 1.0, 10.0);
+    FASTPDF_CHECK(layout.has_value());
+    // Above the document and past the last page's bottom edge (3418).
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(612.0, -5.0), -1);
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(612.0, 3420.0), -1);
+    // Past the content width (1224) anywhere vertically.
+    FASTPDF_CHECK_EQ(layout->pageAtContentPoint(1300.0, 396.0), -1);
+}
+
 FASTPDF_TEST(visible_page_range_single_page_viewport) {
     const auto layout = ContinuousLayout::Create(MixedPages(), 1.0, 10.0);
     FASTPDF_CHECK(layout.has_value());

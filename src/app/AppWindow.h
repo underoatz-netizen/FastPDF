@@ -129,6 +129,10 @@ private:
     void OnKeyDown(WPARAM wParam) noexcept;
     void OnCommand(WPARAM wParam) noexcept;
     void OnLeftButtonDown() noexcept;
+    // Double-click on rendered page content fits the current page to the
+    // viewport (the existing Fit Page command/state). A double-click on the
+    // surrounding margin or the gap between pages is ignored.
+    void OnPageDoubleClick(int x, int y) noexcept;
     void OpenPath(const std::wstring& path) noexcept;
     void ResetDocument() noexcept;
     void RequestDocumentInfo() noexcept;
@@ -175,6 +179,10 @@ private:
     // Search mode & UI (Phase 8).
     void ShowSearchUI() noexcept;
     void HideSearchUI() noexcept;
+    // Applies the DPI-scaled find-panel geometry to the panel and its child
+    // controls and refreshes the control font when the DPI changes. Shared by
+    // the initial show and live WM_DPICHANGED transitions; idempotent.
+    void LayoutSearchPanel() noexcept;
     void OnSearchTextChanged() noexcept;
     void SearchNext() noexcept;
     void SearchPrev() noexcept;
@@ -195,7 +203,11 @@ private:
     Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> renderTarget_;
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> statusTextFormat_;
+    // Right-aligned status metadata (page / total / zoom). Separate from
+    // statusTextFormat_ so the toast text keeps its leading alignment.
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> statusMetaTextFormat_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> statusBrush_;
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> statusMetaBrush_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> errorBrush_;
     UINT dpi_ = 96;
 
@@ -203,6 +215,9 @@ private:
     ViewState state_ = ViewState::Empty;
     std::wstring currentPath_;
     std::wstring statusText_;
+    // Right side of the status line while a document is Ready: page indicator,
+    // zoom and (when enabled) diagnostics.
+    std::wstring statusMeta_;
     std::wstring errorMessage_;
 
     // Document/view identity. docEpoch_ changes per document open; viewEpoch_
@@ -280,6 +295,9 @@ private:
     HWND hwndSearchClose_ = nullptr;
     HWND hwndSearchCount_ = nullptr;
     HFONT searchFont_ = nullptr;
+    // DPI the current searchFont_ was created for (0 = none yet). Lets a DPI
+    // transition recreate the font only when the height actually changes.
+    UINT searchFontDpi_ = 0;
 
     std::uint64_t searchEpoch_ = 0;
     std::wstring searchCurrentQuery_;

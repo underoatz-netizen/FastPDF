@@ -156,6 +156,28 @@ int ContinuousLayout::pageAtContentY(double y) const noexcept {
     return static_cast<int>(index - 1);
 }
 
+int ContinuousLayout::pageAtContentPoint(double x, double y) const noexcept {
+    if (pages_.empty() || y < 0.0) {
+        return -1;
+    }
+    // Page above the cut, exactly like pageAtContentY; the 2D check below
+    // rejects the gap and the side margins.
+    const auto it = std::upper_bound(tops_.begin(), tops_.end(), y);
+    const size_t index = static_cast<size_t>(it - tops_.begin());
+    if (index == 0) {
+        return -1;
+    }
+    const int candidate = static_cast<int>(index - 1);
+    const PageRect rect = pageRect(candidate);
+    if (y > rect.top + rect.height) {
+        return -1;  // In the vertical gap below the page above.
+    }
+    if (x < rect.left || x > rect.left + rect.width) {
+        return -1;  // In the horizontal margin beside the page.
+    }
+    return candidate;
+}
+
 std::pair<int, int> ContinuousLayout::visiblePageRange(
     double scrollY, double viewportHeight) const noexcept {
     if (pages_.empty() || viewportHeight <= 0.0) {

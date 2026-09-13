@@ -11,7 +11,7 @@ this repository or run the portable folder that the packaging script produces.
 
 | | |
 | --- | --- |
-| Version | `0.1.1` (`CMakeLists.txt`) |
+| Version | `0.2.0` (`CMakeLists.txt`) |
 | Platform | Windows 10 / 11, **x64 only** |
 | Toolkit | C++20, MSVC v143, Win32, Direct2D, PDFium |
 | Status | Phase 9 — release readiness, performance instrumentation, portable packaging |
@@ -453,11 +453,11 @@ README describes, the GitHub repository has no published Releases and no tags,
 and `dist/` is not committed. To use FastPDF you must build it from source as
 described above, or run a package that someone built locally.
 
-The version string in this repository is `0.1.1`, and the locally produced
-package name is `FastPDF-0.1.1-win-x64.zip`; that file exists only on the
+The version string in this repository is `0.2.0`, and the locally produced
+package name is `FastPDF-0.2.0-win-x64.zip`; that file exists only on the
 machine that built it.
 
-Draft release-note text for that first release (English and Thai, plus a
+Draft release-note text for the current release (English and Thai, plus a
 copy/paste block for the GitHub Release description) lives in
 [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
@@ -634,8 +634,8 @@ service in this repository.
    the configuration now registers 15 cases and has not been re-run since the
    PDFium-free search-routing and command-line-open tests were added).
 5. Portable packaging: `cmake --build --preset release --target fastpdf_package_release`
-   → `dist/FastPDF-0.1.1-win-x64.zip` with a SHA-256 manifest.
-6. Execution smoke: `dist/FastPDF-0.1.1-win-x64/FastPDF.exe` launches, runs and
+   → `dist/FastPDF-0.2.0-win-x64.zip` with a SHA-256 manifest.
+6. Execution smoke: `dist/FastPDF-0.2.0-win-x64/FastPDF.exe` launches, runs and
    terminates cleanly.
 7. Search panel command routing: `fastpdf_search_ui_routing_tests` (4 cases)
    proves the panel swallows its children's `WM_COMMAND` without the forwarder
