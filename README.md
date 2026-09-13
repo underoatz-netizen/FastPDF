@@ -11,7 +11,7 @@ this repository or run the portable folder that the packaging script produces.
 
 | | |
 | --- | --- |
-| Version | `0.2.0` (`CMakeLists.txt`) |
+| Version | `0.2.1` (`CMakeLists.txt`) |
 | Platform | Windows 10 / 11, **x64 only** |
 | Toolkit | C++20, MSVC v143, Win32, Direct2D, PDFium |
 | Status | Phase 9 — release readiness, performance instrumentation, portable packaging |
@@ -448,13 +448,14 @@ and `pdfium.dll`. `dist/` is excluded by [`.gitignore`](.gitignore).
 
 ## Releases and prebuilt binaries
 
-**This repository does not publish prebuilt binaries.** As of the commit this
-README describes, the GitHub repository has no published Releases and no tags,
-and `dist/` is not committed. To use FastPDF you must build it from source as
-described above, or run a package that someone built locally.
+The GitHub repository publishes Releases with attached portable packages:
+`v0.2.0` (`FastPDF 0.2.0 (Windows x64)`), plus earlier `v0.1.1` and `v0.1.0`.
+`dist/` itself is not committed. The next release, `v0.2.1`, has no tag,
+Release or asset yet: to use it before publication you must build it from
+source as described above, or run a package that someone built locally.
 
-The version string in this repository is `0.2.0`, and the locally produced
-package name is `FastPDF-0.2.0-win-x64.zip`; that file exists only on the
+The version string in this repository is `0.2.1`, and the locally produced
+package name is `FastPDF-0.2.1-win-x64.zip`; that file exists only on the
 machine that built it.
 
 Draft release-note text for the current release (English and Thai, plus a
@@ -463,8 +464,8 @@ copy/paste block for the GitHub Release description) lives in
 
 ## Tests
 
-`ctest --preset debug` and `ctest --preset release` run **24 tests** when
-PDFium is enabled (**15** of them when it is not, because the PDFium-dependent
+`ctest --preset debug` and `ctest --preset release` run **26 tests** when
+PDFium is enabled (**17** of them when it is not, because the PDFium-dependent
 tests are not built).
 
 | Test | What it verifies | Needs PDFium? |
@@ -493,6 +494,8 @@ tests are not built).
 | `fastpdf_search_recent_tests` | Phase-8 Search text query sanitization, result navigation count/index wrapping, recent documents list serialization/deserialization, capacity bounding (max 10), and removal | No |
 | `fastpdf_search_ui_routing_tests` | Search panel command routing: a STATIC panel swallows its child controls' `WM_COMMAND` without the forwarder, and with the forwarder installed the close-button command and the edit box `EN_CHANGE` reach the main window (with correct control id and handle) while other messages pass through to the original panel procedure | No |
 | `fastpdf_search_pdfium_integration_tests` | Phase-8 PDFium incremental text search integration: text page extraction, case-sensitivity matching, zero-result handling on scanned/blank documents, and PDF point bounding rect retrieval | Yes |
+| `fastpdf_view_navigation_tests` | Normal-View navigation math: arrow/page step sizes, hand-pan anchor and start predicate, scrollbar range/page/thumb mapping and thumb-track conversion | No |
+| `fastpdf_update_check_tests` | Manual update-check helpers: release version parsing/comparison/formatting and release `tag_name` extraction (the WinHTTP fetch path is not unit-tested) | No |
 
 The render tests generate their PDF fixtures deterministically at runtime in a
 temp directory (a minimal blank US-Letter page, a 40-bit RC4 encrypted variant
@@ -625,17 +628,18 @@ service in this repository.
 1. Pinned PDFium verified with `scripts/verify_pdfium.ps1` against
    `third_party/pdfium/PDFIUM_LOCK.md`.
 2. Debug build with PDFium: `cmake --preset debug` → `cmake --build --preset debug`
-   → `ctest --preset debug` (24/24 tests pass).
+   → `ctest --preset debug` (26/26 tests pass).
 3. Release build with PDFium: `cmake --preset release` →
-   `cmake --build --preset release` → `ctest --preset release` (24/24 tests pass).
+   `cmake --build --preset release` → `ctest --preset release` (26/26 tests pass).
 4. Release build without PDFium: `cmake -B build/release-off -DFASTPDF_WITH_PDFIUM=OFF`
    → `cmake --build build/release-off --config Release`
    → `ctest --test-dir build/release-off -C Release` (13/13 in that recorded run;
-   the configuration now registers 15 cases and has not been re-run since the
-   PDFium-free search-routing and command-line-open tests were added).
+   the configuration now registers 17 cases and has not been re-run since the
+   PDFium-free search-routing, command-line-open, view-navigation and
+   update-check tests were added).
 5. Portable packaging: `cmake --build --preset release --target fastpdf_package_release`
-   → `dist/FastPDF-0.2.0-win-x64.zip` with a SHA-256 manifest.
-6. Execution smoke: `dist/FastPDF-0.2.0-win-x64/FastPDF.exe` launches, runs and
+   → `dist/FastPDF-0.2.1-win-x64.zip` with a SHA-256 manifest.
+6. Execution smoke: `dist/FastPDF-0.2.1-win-x64/FastPDF.exe` launches, runs and
    terminates cleanly.
 7. Search panel command routing: `fastpdf_search_ui_routing_tests` (4 cases)
    proves the panel swallows its children's `WM_COMMAND` without the forwarder
@@ -655,8 +659,8 @@ template or CI workflow. What the repository does establish:
   attach documents you are not allowed to share: tests use generated fixtures,
   not real files.
 - **Build and test gates** — a change should keep both configurations green:
-  `ctest --preset debug` and `ctest --preset release` with PDFium (24 tests),
-  and the `-DFASTPDF_WITH_PDFIUM=OFF` configuration (15 tests).
+   `ctest --preset debug` and `ctest --preset release` with PDFium (26 tests),
+   and the `-DFASTPDF_WITH_PDFIUM=OFF` configuration (17 tests).
 - **Architecture boundaries** — keep raw PDFium usage inside `src/pdfium/`,
   keep layout math pure in `src/core/`, keep PDFium access on the `RenderWorker`
   thread ([Threading and ownership rules](#threading-and-ownership-rules)).

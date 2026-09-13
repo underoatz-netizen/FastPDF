@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -22,6 +23,7 @@
 #include "ScreenshotGeometry.h"
 #include "ScreenshotCompositor.h"
 #include "ScreenshotClipboard.h"
+#include "ViewNavigation.h"
 #include "PdfToPngDialog.h"
 #include "ImageToPdfDialog.h"
 #include "PrintDialog.h"
@@ -33,6 +35,7 @@ namespace {
 
 constexpr wchar_t kWindowClassName[] = L"FastPDF.MainWindow";
 constexpr UINT kWorkerDoneMessage = WM_APP + 1;
+constexpr UINT kUpdateDoneMessage = WM_APP + 2;
 constexpr UINT_PTR kPromotionTimerId = 1;
 constexpr UINT_PTR kToastTimerId = 2;
 constexpr UINT_PTR kIdFileOpen = 1;
@@ -55,6 +58,8 @@ constexpr UINT_PTR kIdSearchClose = 17;
 constexpr UINT_PTR kIdRecentBase = 1000;
 constexpr UINT_PTR kIdRecentClear = 1100;
 constexpr UINT_PTR kIdToggleDiagnostics = 1200;
+constexpr UINT_PTR kIdAbout = 1300;
+constexpr UINT_PTR kIdCheckUpdates = 1301;
 
 const D2D1_COLOR_F kBackgroundColor = D2D1::ColorF(0.11f, 0.11f, 0.12f, 1.0f);
 const D2D1_COLOR_F kStatusColor = D2D1::ColorF(0.85f, 0.85f, 0.85f, 1.0f);
@@ -144,12 +149,19 @@ AppWindow::AppWindow(const fastpdf::pdfium::PdfiumLibrary& pdfium) noexcept
     : pdfium_(pdfium) {}
 
 AppWindow::~AppWindow() {
+    // Invalidate any in-flight manual update check first so its background
+    // result is dropped and can never target this (possibly destroyed) window.
+    updateChecker_.Cancel();
     // Stop the worker before destroying the window so it never posts to a
     // dead HWND. The worker joins here; the persistent document is destroyed
     // on the worker thread inside Run().
     worker_.Shutdown();
     DiscardDeviceResources();
+    handDragging_ = false;
     if (hwnd_ != nullptr) {
+        if (GetCapture() == hwnd_) {
+            ReleaseCapture();
+        }
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
@@ -187,7 +199,12 @@ bool AppWindow::Create(const wchar_t* title) noexcept {
     const int height = fastpdf::platform::win::ScaleForDpi(768, dpi_);
 
     const HWND created = CreateWindowExW(
-        0, kWindowClassName, title, WS_OVERLAPPEDWINDOW,
+        0, kWindowClassName, title,
+        // WS_VSCROLL reserves a native vertical scrollbar for the normal
+        // document view. It stays enabled only while a document is Ready and
+        // is otherwise grayed (never hidden), so showing/hiding it cannot
+        // resize the client area or feed back into the layout.
+        WS_OVERLAPPEDWINDOW | WS_VSCROLL,
         CW_USEDEFAULT, CW_USEDEFAULT, width, height,
         nullptr, nullptr, wc.hInstance, this);
     if (created == nullptr) {
@@ -230,6 +247,11 @@ bool AppWindow::Create(const wchar_t* title) noexcept {
     AppendMenuW(convertMenu, MF_STRING, kIdConvertImageToPdf, L"&Image to PDF...");
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(convertMenu), L"&Convert");
 
+    HMENU helpMenu = CreatePopupMenu();
+    AppendMenuW(helpMenu, MF_STRING, kIdAbout, L"&About FastPDF");
+    AppendMenuW(helpMenu, MF_STRING, kIdCheckUpdates, L"&Check for Updates");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(helpMenu), L"&Help");
+
     SetMenu(hwnd_, menu);
 
     // Accept drag-and-drop of a single PDF file.
@@ -241,6 +263,8 @@ bool AppWindow::Create(const wchar_t* title) noexcept {
 
     worker_.Start(hwnd_, kWorkerDoneMessage);
     statusText_ = L"Press Ctrl+O or File > Open to open a PDF.";
+    // No document yet: the scrollbar starts disabled.
+    UpdateVerticalScrollbar();
 
     benchmark_.Phase("startup");
     appStartupTimeMs_ = GetTickCount64();
@@ -319,7 +343,7 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) noe
                     HideNotification();
                 }
             } else {
-                OnLeftButtonDown();
+                OnLeftButtonDown(x, y);
             }
             return 0;
         }
@@ -336,10 +360,14 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) noe
             return 0;
         }
         case WM_MOUSEMOVE: {
+            const int x = static_cast<short>(LOWORD(lParam));
+            const int y = static_cast<short>(HIWORD(lParam));
             if (screenshotActive_) {
-                const int x = static_cast<short>(LOWORD(lParam));
-                const int y = static_cast<short>(HIWORD(lParam));
                 OnScreenshotMouseMove(x, y);
+                return 0;
+            }
+            if (handDragging_) {
+                UpdateHandPan(x, y);
                 return 0;
             }
             break;
@@ -351,14 +379,65 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) noe
                 OnScreenshotMouseUp(x, y);
                 return 0;
             }
+            if (handDragging_) {
+                // Apply the final drag position, then release deterministically.
+                // A press+release without movement leaves the scroll unchanged
+                // (ScrollTo no-ops) so a click never becomes another action.
+                const int x = static_cast<short>(LOWORD(lParam));
+                const int y = static_cast<short>(HIWORD(lParam));
+                UpdateHandPan(x, y);
+                EndHandPan(/*releaseCapture=*/true);
+                return 0;
+            }
             break;
         }
+        case WM_CAPTURECHANGED: {
+            // An external party (system, dialog, another window) took or
+            // cleared mouse capture mid-drag: stop panning without touching
+            // capture ownership. The intentional EndHandPan release sets
+            // handDragging_ false first, so it is unaffected here.
+            if (handDragging_ &&
+                reinterpret_cast<HWND>(lParam) != hwnd_) {
+                handDragging_ = false;
+            }
+            break;
+        }
+        case WM_CANCELMODE:
+            // System modal interruption (e.g. menu/window-modal loop): cancel
+            // any drag, then let the default handling continue.
+            CancelHandPan();
+            break;
+        case WM_KILLFOCUS:
+            // Focus loss ends the drag deterministically; the next press
+            // re-arms from a fresh origin.
+            CancelHandPan();
+            break;
         case WM_SETCURSOR: {
             if (screenshotActive_) {
                 SetCursor(LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_CROSS)));
                 return TRUE;
             }
+            if (handDragging_) {
+                SetCursor(LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_HAND)));
+                return TRUE;
+            }
+            // Discoverability: an open-hand cue while hovering rendered page
+            // content in the normal Ready view (client area only). Every other
+            // mode keeps its existing cursor behavior.
+            if (LOWORD(lParam) == HTCLIENT && CanNormalViewScroll() &&
+                !toastVisible_) {
+                POINT cursor{};
+                if (GetCursorPos(&cursor) && ScreenToClient(hwnd_, &cursor) &&
+                    PointOverPageContent(cursor.x, cursor.y)) {
+                    SetCursor(LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_HAND)));
+                    return TRUE;
+                }
+            }
             break;
+        }
+        case WM_VSCROLL: {
+            OnVScroll(wParam);
+            return 0;
         }
         case WM_MOUSEWHEEL: {
             OnMouseWheel(wParam, lParam);
@@ -411,9 +490,16 @@ LRESULT AppWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) noe
             OnWorkerDone(completion);
             return 0;
         }
+        case kUpdateDoneMessage: {
+            auto* result =
+                reinterpret_cast<fastpdf::app::update::UpdateCheckResult*>(lParam);
+            OnUpdateCheckDone(result);
+            return 0;
+        }
         case WM_ERASEBKGND:
             return 1;  // Fully painted in WM_PAINT; avoid flicker.
         case WM_DESTROY:
+            CancelHandPan();
             hwnd_ = nullptr;
             PostQuitMessage(0);
             return 0;
@@ -500,6 +586,7 @@ void AppWindow::OnResize(UINT width, UINT height) noexcept {
             RebuildPresentationLayout();
             RequestPresentationRenders();
         }
+        UpdateVerticalScrollbar();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
@@ -537,6 +624,7 @@ void AppWindow::OnDpiChanged(UINT dpi, const RECT& suggestedRect) noexcept {
             RebuildPresentationLayout();
             RequestPresentationRenders();
         }
+        UpdateVerticalScrollbar();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
@@ -629,6 +717,12 @@ void AppWindow::OnCommand(WPARAM wParam) noexcept {
             fastpdf::platform::win::SaveRecentFiles(recentState_);
             UpdateRecentMenu();
             break;
+        case kIdAbout:
+            OnAbout();
+            break;
+        case kIdCheckUpdates:
+            OnCheckForUpdates();
+            break;
         case kIdToggleDiagnostics:
             diagnosticsEnabled_ = !diagnosticsEnabled_;
             Log(L"Developer diagnostics toggle: " + std::wstring(diagnosticsEnabled_ ? L"ENABLED" : L"DISABLED"));
@@ -719,6 +813,28 @@ void AppWindow::OnKeyDown(WPARAM wParam) noexcept {
                 GoToPage(layout_->pageCount() - 1);
             }
             return;
+        case VK_UP:
+            // Small consistent nudge (not a page jump). Skipped while a search
+            // control has keyboard focus so typing/navigation there is never
+            // stolen; those keys never reach the main window then anyway.
+            if (CanNormalViewScroll() && !IsFocusInSearchPanel()) {
+                ScrollBy(0.0, -ArrowStepPx());
+                return;
+            }
+            break;
+        case VK_DOWN:
+            if (CanNormalViewScroll() && !IsFocusInSearchPanel()) {
+                ScrollBy(0.0, ArrowStepPx());
+                return;
+            }
+            break;
+        case VK_SPACE:
+            if (CanNormalViewScroll() && !IsFocusInSearchPanel()) {
+                const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+                ScrollBy(0.0, shift ? -ViewportHeight() : ViewportHeight());
+                return;
+            }
+            break;
         default:
             break;
     }
@@ -758,8 +874,13 @@ void AppWindow::OnMouseWheel(WPARAM wParam, LPARAM lParam) noexcept {
     }
 }
 
-void AppWindow::OnLeftButtonDown() noexcept {
-    // In presentation mode a left click advances to the next page.
+void AppWindow::OnLeftButtonDown(int x, int y) noexcept {
+    // A press directly over rendered page content starts a hand-pan drag and
+    // consumes the press; anything else keeps the existing behavior (in
+    // presentation mode a left click advances to the next page).
+    if (TryStartHandPan(x, y)) {
+        return;
+    }
     if (presenting_) {
         PresentationNext();
     }
@@ -769,6 +890,8 @@ void AppWindow::OnPageDoubleClick(int x, int y) noexcept {
     if (presenting_ || state_ != ViewState::Ready || !layout_.has_value()) {
         return;
     }
+    // The fit rebuilds the layout, which would stale any drag origin.
+    CancelHandPan();
     // Viewport client coordinates -> content space; only a point directly over
     // a page box triggers the fit. Clicks on the margin beside a page or in the
     // gap between pages resolve to -1 and are ignored.
@@ -790,6 +913,8 @@ void AppWindow::EnterPresentation() noexcept {
     if (presenting_ || state_ != ViewState::Ready || !layout_.has_value()) {
         return;
     }
+    // Mode transition ends any drag deterministically and grays the scrollbar.
+    CancelHandPan();
     SaveWindowPlacement();
 
     // Hide the menu and switch to a borderless popup covering the monitor.
@@ -827,6 +952,7 @@ void AppWindow::EnterPresentation() noexcept {
     RebuildPresentationLayout();
     RequestPresentationRenders();
     SetFocus(hwnd_);
+    UpdateVerticalScrollbar();
     InvalidateRect(hwnd_, nullptr, FALSE);
     Log(L"Presentation entered at page " + std::to_wstring(presentationPage_));
 }
@@ -835,6 +961,7 @@ void AppWindow::ExitPresentation() noexcept {
     if (!presenting_) {
         return;
     }
+    CancelHandPan();
     presenting_ = false;
     presentationLayout_.reset();
     presentationRenderScale_ = 0.0;
@@ -857,6 +984,7 @@ void AppWindow::ExitPresentation() noexcept {
         RequestRenders();
         UpdateStatusText();
     }
+    UpdateVerticalScrollbar();
     InvalidateRect(hwnd_, nullptr, FALSE);
     Log(L"Presentation exited");
 }
@@ -1066,6 +1194,8 @@ void AppWindow::EnterScreenshotMode() noexcept {
     if (screenshotActive_ || presenting_ || state_ != ViewState::Ready) {
         return;
     }
+    // Mode transition (screenshot has its own drag semantics).
+    CancelHandPan();
     HideNotification();
     screenshotActive_ = true;
     screenshotDragging_ = false;
@@ -1432,6 +1562,7 @@ void AppWindow::OpenPathFromCommandLine(const std::wstring& path) noexcept {
 }
 
 void AppWindow::ResetDocument() noexcept {
+    CancelHandPan();
     CancelScreenshotMode();
     HideNotification();
     HideSearchUI();
@@ -1456,6 +1587,7 @@ void AppWindow::ResetDocument() noexcept {
     firstFramePresentedLogged_ = false;
     firstPreviewRenderLogged_ = false;
     firstFinalRenderLogged_ = false;
+    UpdateVerticalScrollbar();
 }
 
 void AppWindow::RequestDocumentInfo() noexcept {
@@ -1699,6 +1831,8 @@ void AppWindow::RebuildLayout() noexcept {
         scrollX_ = layout_->clampScrollX(scrollX_, ViewportWidth());
         scrollY_ = layout_->clampScrollY(scrollY_, ViewportHeight());
     }
+    // Zoom/resize/DPI/open rebuilds re-range the scrollbar (no render work).
+    UpdateVerticalScrollbar();
 }
 
 void AppWindow::MarkInputActivity() noexcept {
@@ -1847,6 +1981,7 @@ void AppWindow::SetFitMode(fastpdf::core::layout::FitMode mode) noexcept {
     if (state_ != ViewState::Ready || !layout_.has_value()) {
         return;
     }
+    CancelHandPan();
     fitMode_ = mode;
     const fastpdf::core::layout::ViewAnchor anchor =
         fastpdf::core::layout::CaptureAnchor(
@@ -1877,6 +2012,7 @@ void AppWindow::ZoomAt(double newPercent, double cursorX, double cursorY) noexce
     if (std::fabs(clamped - zoomPercent_) < 1e-6) {
         return;
     }
+    CancelHandPan();
     // Capture the anchor at the cursor so the content under the cursor stays
     // put while zooming.
     const fastpdf::core::layout::ViewAnchor anchor =
@@ -1898,18 +2034,211 @@ void AppWindow::ScrollBy(double dx, double dy) noexcept {
     if (state_ != ViewState::Ready || !layout_.has_value()) {
         return;
     }
-    scrollX_ = layout_->clampScrollX(scrollX_ + dx, ViewportWidth());
-    scrollY_ = layout_->clampScrollY(scrollY_ + dy, ViewportHeight());
+    const double newX = layout_->clampScrollX(scrollX_ + dx, ViewportWidth());
+    const double newY = layout_->clampScrollY(scrollY_ + dy, ViewportHeight());
+    if (std::fabs(newX - scrollX_) < 1e-9 &&
+        std::fabs(newY - scrollY_) < 1e-9) {
+        return;  // Clamped to no movement: no render work, no repaint.
+    }
+    scrollX_ = newX;
+    scrollY_ = newY;
     MarkInputActivity();
     RequestRenders();
     UpdateStatusText();
+    UpdateVerticalScrollbar();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
+
+void AppWindow::ScrollTo(double x, double y) noexcept {
+    if (state_ != ViewState::Ready || !layout_.has_value()) {
+        return;
+    }
+    const double newX = layout_->clampScrollX(x, ViewportWidth());
+    const double newY = layout_->clampScrollY(y, ViewportHeight());
+    if (std::fabs(newX - scrollX_) < 1e-9 &&
+        std::fabs(newY - scrollY_) < 1e-9) {
+        return;  // Already there (e.g. a click without drag): stay quiet.
+    }
+    scrollX_ = newX;
+    scrollY_ = newY;
+    MarkInputActivity();
+    RequestRenders();
+    UpdateStatusText();
+    UpdateVerticalScrollbar();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+bool AppWindow::CanNormalViewScroll() const noexcept {
+    return fastpdf::app::navigation::CanNormalViewScroll(
+        state_ == ViewState::Ready, presenting_, screenshotActive_);
+}
+
+bool AppWindow::IsFocusInSearchPanel() const noexcept {
+    if (!searchVisible_) {
+        return false;
+    }
+    const HWND focus = GetFocus();
+    if (focus == nullptr) {
+        return false;
+    }
+    if (focus == hwndSearchEdit_ || focus == hwndSearchPanel_ ||
+        focus == hwndSearchPrev_ || focus == hwndSearchNext_ ||
+        focus == hwndSearchClose_ || focus == hwndSearchCount_) {
+        return true;
+    }
+    return hwndSearchPanel_ != nullptr && IsChild(hwndSearchPanel_, focus);
+}
+
+bool AppWindow::PointOverPageContent(int x, int y) const noexcept {
+    if (state_ != ViewState::Ready || !layout_.has_value()) {
+        return false;
+    }
+    return layout_->pageAtContentPoint(
+               scrollX_ + static_cast<double>(x),
+               scrollY_ + static_cast<double>(y)) >= 0;
+}
+
+double AppWindow::ArrowStepPx() const noexcept {
+    return fastpdf::app::navigation::ArrowStepPx(static_cast<double>(dpi_));
+}
+
+void AppWindow::OnVScroll(WPARAM wParam) noexcept {
+    if (state_ != ViewState::Ready || !layout_.has_value() || presenting_) {
+        return;
+    }
+    const int code = LOWORD(wParam);
+    const double viewportHeight = ViewportHeight();
+    const double maxY = layout_->maxScrollY(viewportHeight);
+    double target = scrollY_;
+    switch (code) {
+        case SB_LINEUP:
+            target = scrollY_ - ArrowStepPx();
+            break;
+        case SB_LINEDOWN:
+            target = scrollY_ + ArrowStepPx();
+            break;
+        case SB_PAGEUP:
+            target = scrollY_ -
+                     fastpdf::app::navigation::PageStepPx(viewportHeight);
+            break;
+        case SB_PAGEDOWN:
+            target = scrollY_ +
+                     fastpdf::app::navigation::PageStepPx(viewportHeight);
+            break;
+        case SB_TOP:
+            target = 0.0;
+            break;
+        case SB_BOTTOM:
+            target = maxY;
+            break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: {
+            // 32-bit-safe track position (HIWORD wraps past 32K); the pure
+            // mapping keeps the thumb monotonic and in bounds.
+            SCROLLINFO info{};
+            info.cbSize = sizeof(info);
+            info.fMask = SIF_RANGE | SIF_PAGE | SIF_TRACKPOS;
+            if (GetScrollInfo(hwnd_, SB_VERT, &info) == 0) {
+                return;
+            }
+            target = fastpdf::app::navigation::ThumbTrackToOffset(
+                info.nTrackPos, info.nMin, info.nMax, info.nPage, maxY);
+            break;
+        }
+        case SB_ENDSCROLL:
+        default:
+            return;
+    }
+    // A discrete scrollbar jump invalidates any in-progress drag origin.
+    CancelHandPan();
+    ScrollTo(scrollX_, target);
+}
+
+void AppWindow::UpdateVerticalScrollbar() noexcept {
+    if (hwnd_ == nullptr) {
+        return;
+    }
+    if (presenting_ || state_ != ViewState::Ready || !layout_.has_value()) {
+        SCROLLINFO clear{};
+        clear.cbSize = sizeof(clear);
+        clear.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+        clear.nMin = 0;
+        clear.nMax = 0;
+        clear.nPage = 0;
+        clear.nPos = 0;
+        SetScrollInfo(hwnd_, SB_VERT, &clear, TRUE);
+        EnableScrollBar(hwnd_, SB_VERT, ESB_DISABLE_BOTH);
+        return;
+    }
+    const fastpdf::app::navigation::VScrollParams params =
+        fastpdf::app::navigation::ComputeVScroll(
+            layout_->contentHeight(), ViewportHeight(), scrollY_);
+    SCROLLINFO info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    info.nMin = params.nMin;
+    info.nMax = params.nMax;
+    info.nPage = params.nPage;
+    info.nPos = params.nPos;
+    // SetScrollInfo never sends WM_VSCROLL, so this cannot re-enter the
+    // render path; it only repaints the non-client scrollbar itself.
+    SetScrollInfo(hwnd_, SB_VERT, &info, TRUE);
+    EnableScrollBar(hwnd_, SB_VERT,
+                    params.enabled ? ESB_ENABLE_BOTH : ESB_DISABLE_BOTH);
+}
+
+bool AppWindow::TryStartHandPan(int x, int y) noexcept {
+    const int page = (state_ == ViewState::Ready && layout_.has_value())
+                         ? layout_->pageAtContentPoint(
+                               scrollX_ + static_cast<double>(x),
+                               scrollY_ + static_cast<double>(y))
+                         : -1;
+    if (!fastpdf::app::navigation::ShouldStartHandPan(
+            state_ == ViewState::Ready, presenting_, screenshotActive_,
+            toastVisible_, page)) {
+        return false;
+    }
+    handDragging_ = true;
+    handOrigin_ = POINT{x, y};
+    handOriginScrollX_ = scrollX_;
+    handOriginScrollY_ = scrollY_;
+    SetCapture(hwnd_);
+    SetCursor(LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_HAND)));
+    return true;
+}
+
+void AppWindow::UpdateHandPan(int x, int y) noexcept {
+    if (!handDragging_) {
+        return;
+    }
+    if (state_ != ViewState::Ready || !layout_.has_value()) {
+        CancelHandPan();
+        return;
+    }
+    ScrollTo(fastpdf::app::navigation::PanScrollOffset(handOriginScrollX_,
+                                                       handOrigin_.x, x),
+             fastpdf::app::navigation::PanScrollOffset(handOriginScrollY_,
+                                                       handOrigin_.y, y));
+}
+
+void AppWindow::EndHandPan(bool releaseCapture) noexcept {
+    if (!handDragging_) {
+        return;
+    }
+    handDragging_ = false;
+    if (releaseCapture && hwnd_ != nullptr && GetCapture() == hwnd_) {
+        ReleaseCapture();
+    }
+}
+
+void AppWindow::CancelHandPan() noexcept { EndHandPan(/*releaseCapture=*/true); }
 
 void AppWindow::GoToPage(int pageIndex) noexcept {
     if (state_ != ViewState::Ready || !layout_.has_value()) {
         return;
     }
+    // A discrete jump invalidates any in-progress drag origin.
+    CancelHandPan();
     const int clamped =
         std::clamp(pageIndex, 0, layout_->pageCount() - 1);
     scrollY_ = fastpdf::core::layout::ScrollTopForPageTop(
@@ -1918,6 +2247,7 @@ void AppWindow::GoToPage(int pageIndex) noexcept {
     MarkInputActivity();
     RequestRenders();
     UpdateStatusText();
+    UpdateVerticalScrollbar();
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -2714,6 +3044,104 @@ void AppWindow::OnOpenRecent(size_t index) noexcept {
         zoomPercent_ = entry.zoomPercent;
         fitMode_ = fastpdf::core::layout::FitMode::Custom;
     }
+}
+
+void AppWindow::OnAbout() noexcept {
+    const std::wstring version = Utf8ToWide(fastpdf::core::versionString());
+    const std::wstring text = L"FastPDF\nVersion " + version;
+    MessageBoxW(hwnd_, text.c_str(), L"About FastPDF", MB_OK | MB_ICONINFORMATION);
+}
+
+void AppWindow::OnCheckForUpdates() noexcept {
+    // Manual-only entry point: never invoked at startup or on a timer.
+    // Duplicate invocations while a check is active are ignored.
+    if (updateChecking_ || updateChecker_.is_checking()) {
+        return;
+    }
+    if (!updateChecker_.Start(hwnd_, kUpdateDoneMessage)) {
+        return;
+    }
+    updateChecking_ = true;
+    SetUpdateMenuEnabled(false);
+    // Nonblocking status only; the document and render pipeline are untouched.
+    updateSavedStatusText_ = statusText_;
+    updateSavedStatusMeta_ = statusMeta_;
+    if (state_ == ViewState::Ready) {
+        statusMeta_ = L"Checking for updates...";
+    } else {
+        statusText_ = L"Checking for updates...";
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    Log(L"Manual update check started");
+}
+
+void AppWindow::OnUpdateCheckDone(
+    fastpdf::app::update::UpdateCheckResult* result) noexcept {
+    // The background thread transferred ownership to the UI queue; the UI
+    // frees the result here (and the poster freed it when delivery failed).
+    const std::unique_ptr<fastpdf::app::update::UpdateCheckResult> owned(result);
+    updateChecking_ = false;
+    SetUpdateMenuEnabled(true);
+    // Restore the pre-check status; a Ready recompute refreshes doc metadata.
+    if (state_ == ViewState::Ready) {
+        UpdateStatusText();
+    } else {
+        statusText_ = updateSavedStatusText_;
+        statusMeta_ = updateSavedStatusMeta_;
+    }
+    updateSavedStatusText_.clear();
+    updateSavedStatusMeta_.clear();
+    InvalidateRect(hwnd_, nullptr, FALSE);
+
+    // Update-check failure is reported modally and stays separate from any
+    // document/rendering state.
+    if (owned == nullptr) {
+        Log(L"Manual update check failed: internal error");
+        MessageBoxW(hwnd_, L"Could not check for updates.\n\nInternal error.",
+                    L"Check for Updates", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (!owned->success) {
+        std::wstring detail = Utf8ToWide(owned->error);
+        if (detail.empty()) {
+            detail = L"Unknown error.";
+        }
+        Log(L"Manual update check failed");
+        MessageBoxW(hwnd_, (L"Could not check for updates.\n\n" + detail).c_str(),
+                    L"Check for Updates", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    const std::wstring current = Utf8ToWide(owned->currentVersion);
+    const std::wstring latest = Utf8ToWide(owned->latestVersion);
+    if (owned->updateAvailable) {
+        Log(L"Manual update check: update available");
+        const std::wstring message =
+            L"A new version of FastPDF is available.\n\nInstalled: " + current +
+            L"\nLatest: " + latest +
+            L"\n\nOpen the releases page to download it?";
+        const int choice = MessageBoxW(hwnd_, message.c_str(), L"Update Available",
+                                       MB_YESNO | MB_ICONINFORMATION);
+        if (choice == IDYES) {
+            // Fixed known releases page only; never a URL from the response.
+            ShellExecuteW(nullptr, L"open",
+                          fastpdf::app::update::kReleasesPageUrl, nullptr,
+                          nullptr, SW_SHOWNORMAL);
+        }
+        return;
+    }
+    Log(L"Manual update check: already current");
+    MessageBoxW(hwnd_,
+                (L"You are up to date.\n\nInstalled version: " + current).c_str(),
+                L"Check for Updates", MB_OK | MB_ICONINFORMATION);
+}
+
+void AppWindow::SetUpdateMenuEnabled(bool enabled) noexcept {
+    const HMENU menu = GetMenu(hwnd_);
+    if (menu == nullptr) {
+        return;
+    }
+    EnableMenuItem(menu, static_cast<UINT>(kIdCheckUpdates),
+                   MF_BYCOMMAND | (enabled ? MF_ENABLED : MF_GRAYED));
 }
 
 } // namespace fastpdf::app

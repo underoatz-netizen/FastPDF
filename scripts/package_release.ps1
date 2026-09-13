@@ -99,7 +99,7 @@ if (-not (Test-Path -LiteralPath $readmeSrc)) {
 #   3. the literal fallback below
 # $FallbackVersion must stay in sync with the CMakeLists.txt version if both the
 # exe metadata and the CMake parse are unavailable.
-$FallbackVersion = "0.2.0"
+$FallbackVersion = "0.2.1"
 
 function Get-CMakeProjectVersion {
     param([Parameter(Mandatory = $true)][string]$Path)

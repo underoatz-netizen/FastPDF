@@ -138,6 +138,29 @@ add_executable(fastpdf_search_recent_tests
 target_link_libraries(fastpdf_search_recent_tests PRIVATE fastpdf_core)
 add_test(NAME fastpdf_search_recent_tests COMMAND fastpdf_search_recent_tests)
 
+# Normal-View navigation math (arrow/page deltas, hand-pan anchor/predicate,
+# scrollbar range/thumb mapping). PDFium-free and Windows-free.
+add_executable(fastpdf_view_navigation_tests
+    view_navigation_tests.cpp test_harness.h
+    "${CMAKE_SOURCE_DIR}/src/app/ViewNavigation.h")
+target_include_directories(fastpdf_view_navigation_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/app")
+target_link_libraries(fastpdf_view_navigation_tests PRIVATE fastpdf_core)
+add_test(NAME fastpdf_view_navigation_tests COMMAND fastpdf_view_navigation_tests)
+
+# Manual update-check parsing/comparison tests (PDFium-free, no network: the
+# WinHTTP fetch path is intentionally not unit-tested).
+add_executable(fastpdf_update_check_tests
+    update_check_tests.cpp test_harness.h
+    "${CMAKE_SOURCE_DIR}/src/app/UpdateCheck.cpp"
+    "${CMAKE_SOURCE_DIR}/src/app/UpdateCheck.h")
+target_include_directories(fastpdf_update_check_tests PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/app")
+target_link_libraries(fastpdf_update_check_tests PRIVATE
+    fastpdf_core
+    winhttp)
+add_test(NAME fastpdf_update_check_tests COMMAND fastpdf_update_check_tests)
+
 # Phase-8 Search panel WM_COMMAND routing (close/prev/next buttons and edit
 # EN_CHANGE must reach the main window through the STATIC panel). Win32-only,
 # PDFium-free; compiles only the search panel forwarder.

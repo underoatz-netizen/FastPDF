@@ -10,15 +10,53 @@ description field.
 
 | | |
 | --- | --- |
-| Version in this repository | `0.2.0` (`CMakeLists.txt`, embedded as the file/product version) |
-| Published GitHub Releases | **None.** The repository currently has no published Releases and no tags |
-| Published release assets | **None.** No binaries are attached and `dist/` is excluded by [`.gitignore`](.gitignore) |
-| Expected asset once a release is created | `FastPDF-0.2.0-win-x64.zip`, built locally with [`scripts/package_release.ps1`](scripts/package_release.ps1) or `cmake --build --preset release --target fastpdf_package_release` |
-| Tag name proposed for that release | `v0.2.0` (planned — not created yet) |
+| Version in this repository | `0.2.1` (`CMakeLists.txt`, embedded as the file/product version) |
+| Published GitHub Releases | `v0.2.0` (`FastPDF 0.2.0 (Windows x64)`, with asset `FastPDF-0.2.0-win-x64.zip`), plus earlier `v0.1.1` and `v0.1.0`. Verified with `gh release list` / `gh release view v0.2.0` |
+| Published `v0.2.1` release | **None yet.** No `v0.2.1` tag, no GitHub Release and no asset exist until someone builds the package below, creates the Release and attaches the ZIP |
+| Expected asset once a `v0.2.1` release is created | `FastPDF-0.2.1-win-x64.zip`, built locally with [`scripts/package_release.ps1`](scripts/package_release.ps1) or `cmake --build --preset release --target fastpdf_package_release` |
+| Tag name proposed for that release | `v0.2.1` (planned — not created yet; the existing `v0.2.0` tag is left untouched) |
 
-Everything below is therefore **draft release text**: the facts about the
-software are supported by the repository, while the asset itself does not exist
-on GitHub until someone builds it, creates the Release and attaches the ZIP.
+The `0.2.0` sections below describe the published release. Everything about
+`0.2.1` is **draft release text**: the facts about the software are supported
+by the repository, while the `v0.2.1` tag, Release and asset do not exist on
+GitHub until someone creates them.
+
+## What's new in 0.2.1
+
+This is a patch release over the published `0.2.0`. It adds a Help menu with
+an About dialog and a manual update notification, plus discoverable
+normal-View navigation (keyboard stepping, a native vertical scrollbar and
+content-only hand panning). It changes no dependency, no product scope and no
+renderer/PDFium behavior.
+
+- **Help > About FastPDF** — a new Help menu whose About dialog shows
+  `FastPDF` plus the compiled version string (for this release, `0.2.1`),
+  taken from the same `FASTPDF_VERSION_STRING` the structure tests verify.
+- **Help > Check for Updates (manual notification only)** — an asynchronous,
+  strictly manual check against the fixed
+  `api.github.com/repos/underoatz-netizen/FastPDF/releases/latest` endpoint
+  over HTTPS with system certificate validation, finite timeouts and a bounded
+  response body. There is no startup, timer or polling trigger, nothing is
+  downloaded or installed, and no document data or telemetry is transmitted.
+  When a newer release exists the dialog offers to open the fixed repository
+  releases page after explicit user confirmation; otherwise it reports the
+  installed version as up to date, and failures report a plain message without
+  touching document or rendering state.
+- **Discoverable normal-View navigation** — Up/Down/Left/Right arrows nudge
+  the view by a DPI-scaled step, Space / Shift+Space move by approximately one
+  viewport, a native vertical scrollbar (range/page/thumb derived from the
+  layout geometry) supports line, page and thumb-track scrolling, and
+  click-drag on rendered page content pans the document 1:1 under the cursor.
+  All of it runs through the existing scroll path, keeps the
+  preview-to-final render behavior, and stays out of presentation mode,
+  screenshot capture and the save-notification toast. The pure navigation math
+  is covered by `fastpdf_view_navigation_tests` and the update parsing and
+  version comparison by `fastpdf_update_check_tests` (the WinHTTP fetch path
+  itself is intentionally not unit-tested and was exercised by hand only to
+  the extent of its error dialogs, not against the live network).
+- **Test status:** 26 CTest cases pass with PDFium enabled (Debug and
+  Release); 17 are registered without it. These are maintainer-recorded
+  results; the repository has no CI workflow.
 
 ## What's new in 0.2.0
 
@@ -67,8 +105,101 @@ open, and it changes no dependency or product scope.
 
 ## Copy/paste text for the GitHub Release description
 
-- Suggested **tag**: `v0.2.0` (create it on the commit you are releasing).
-- Suggested **release title**: `FastPDF 0.2.0 (Windows x64)`.
+### For v0.2.1 (pending — paste this when creating the v0.2.1 release)
+
+- Suggested **tag**: `v0.2.1` (create it on the commit you are releasing; it does not exist yet — leave the existing `v0.2.0` tag untouched).
+- Suggested **release title**: `FastPDF 0.2.1 (Windows x64)`.
+
+Paste the block below into the release description. It uses absolute links so it
+renders correctly outside the repository file view, and indented code blocks so
+the whole block stays copyable as one piece. Replace nothing except the parts
+that describe assets you did not attach.
+
+```markdown
+**FastPDF 0.2.1** is a patch update to a lightweight, fast, minimal Windows
+PDF viewer built with Win32 + Direct2D + PDFium. It adds a Help menu with an
+About dialog and a manual-only update notification, plus discoverable
+normal-View navigation (arrow-key stepping, a native vertical scrollbar and
+content-only hand panning); it is the successor to the published 0.2.0 and
+changes no dependency or product scope.
+
+> **Assets:** attach `FastPDF-0.2.1-win-x64.zip` only after it has been produced
+> locally by [`scripts/package_release.ps1`](https://github.com/underoatz-netizen/FastPDF/blob/master/scripts/package_release.ps1).
+> If no asset is attached to this release, FastPDF is available as source code
+> only — see the build instructions in the
+> [README](https://github.com/underoatz-netizen/FastPDF/blob/master/README.md).
+
+## Supported platform
+
+- Windows 10 or Windows 11, **64-bit (x64)** only.
+- `FastPDF.exe` must sit in the same folder as `pdfium.dll` (the portable ZIP
+  above already contains both).
+- No installer, no administrator rights and no .NET runtime dependency. The UI
+  (menus, dialogs, messages) is English only.
+
+## How to run the portable package
+
+1. Download and extract the ZIP to any folder, for example `C:\Tools\FastPDF\`.
+2. Start `FastPDF.exe`. Nothing is installed and no registry entries are written.
+3. Press **Ctrl+O** (or **File > Open...**) and choose a PDF, or drag a single
+   PDF onto the window. You can also open one PDF directly at launch:
+   `FastPDF.exe "C:\path\to\file.pdf"` (the path may contain spaces and
+   Unicode; quote it as shown).
+4. To move or remove the app, move or delete the folder.
+
+## What is new in 0.2.1
+
+- **Help > About FastPDF** — shows the application name and the compiled
+  version (`0.2.1`).
+- **Help > Check for Updates** — a strictly manual, asynchronous notification
+  check against the published GitHub releases. Nothing runs at startup or on a
+  timer, nothing is downloaded or installed, and no document data or telemetry
+  leaves the machine. When a newer release exists you are asked whether to
+  open the releases page; otherwise you are told the installed version is up
+  to date.
+- **Arrow-key and page navigation** — arrow keys nudge the view, Space /
+  Shift+Space move by about one viewport, all in normal View only.
+- **Native vertical scrollbar** — a standard Windows scrollbar whose range,
+  page size and thumb position follow the document layout, including
+  thumb-track dragging.
+- **Content-only hand panning** — click-drag directly on rendered page content
+  to pan; drags starting on margins, gaps, in presentation mode, during
+  screenshot capture or under the save notification never pan.
+- Everything from the published 0.2.0 (continuous viewing, modern native UI,
+  per-monitor DPI, double-click to Fit Page, command-line open, zoom and page
+  anchor, presentation mode, screenshot capture, PDF to PNG, images to PDF,
+  native printing, incremental text search, recent files, diagnostics,
+  graceful error messages, application icon) is unchanged.
+
+## Portable package contents
+
+        FastPDF.exe                application binary
+        pdfium.dll                 pinned PDFium runtime
+        THIRD_PARTY_NOTICES.txt    third-party licenses and acknowledgments
+        README.txt                 project README
+        LICENSE.txt                license / terms notice from the packaging script
+        MANIFEST.txt               SHA-256 hashes of every file in the package
+
+The package is produced from a Release build; `MANIFEST.txt` lets you verify the
+files with `Get-FileHash`.
+
+## Testing status
+
+26 CTest cases pass with PDFium enabled, in both Debug and Release. Built with
+`-DFASTPDF_WITH_PDFIUM=OFF` the configuration registers 17 cases; its last
+recorded full run predates the search-panel routing, command-line-open,
+view-navigation and update-check tests, so that configuration has not been
+re-verified since. These results were
+recorded by the maintainer on a single Windows 11 x64 reference machine; this
+repository has no CI workflow, and `fastpdf_print_integration_tests`
+additionally requires Microsoft Print to PDF to be available on the machine that
+runs it.
+```
+
+### Published v0.2.0 text (historical — already used for the v0.2.0 release)
+
+- Published **tag**: `v0.2.0`.
+- Published **release title**: `FastPDF 0.2.0 (Windows x64)`.
 
 Paste the block below into the release description. It uses absolute links so it
 renders correctly outside the repository file view, and indented code blocks so
@@ -238,7 +369,7 @@ accompany any redistribution of `pdfium.dll`.
 - Do not paste a download URL by hand — GitHub generates the asset link when the
   file is attached.
 - Do not claim a checksum for the ZIP in advance; publish the hash only after the
-  asset exists: `Get-FileHash .\dist\FastPDF-0.2.0-win-x64.zip -Algorithm SHA256`.
+  asset exists: `Get-FileHash .\dist\FastPDF-0.2.1-win-x64.zip -Algorithm SHA256`.
 - The version string comes from `CMakeLists.txt`; bump it there before building
   the next package so the ZIP name and `MANIFEST.txt` stay consistent.
 - Commit and push this documentation first: the Thai release body links to

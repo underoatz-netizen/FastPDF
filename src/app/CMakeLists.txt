@@ -27,6 +27,7 @@ add_executable(FastPDF WIN32
     ScreenshotCompositor.cpp
     ScreenshotClipboard.h
     ScreenshotClipboard.cpp
+    ViewNavigation.h
     PdfToPngOptions.h
     PdfToPngOptions.cpp
     PdfToPngWorker.h
@@ -45,6 +46,8 @@ add_executable(FastPDF WIN32
     PrintWorker.cpp
     PrintDialog.h
     PrintDialog.cpp
+    UpdateCheck.h
+    UpdateCheck.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/app.rc")
 
 target_include_directories(FastPDF PRIVATE
@@ -62,7 +65,8 @@ target_link_libraries(FastPDF PRIVATE
     fastpdf_core
     fastpdf_renderer
     fastpdf_pdfium
-    fastpdf_platform_win)
+    fastpdf_platform_win
+    winhttp)
 
 if(FASTPDF_WITH_PDFIUM)
     fastpdf_copy_pdfium_runtime(FastPDF)

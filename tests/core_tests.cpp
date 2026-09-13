@@ -17,7 +17,7 @@ FASTPDF_TEST(version_fields_are_consistent) {
     const Version v = version();
     FASTPDF_CHECK_EQ(v.major, 0);
     FASTPDF_CHECK_EQ(v.minor, 2);
-    FASTPDF_CHECK_EQ(v.patch, 0);
+    FASTPDF_CHECK_EQ(v.patch, 1);
 }
 
 FASTPDF_TEST(version_string_has_three_components) {

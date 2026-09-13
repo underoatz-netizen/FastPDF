@@ -26,6 +26,7 @@
 
 #include "Benchmark.h"
 #include "RenderWorker.h"
+#include "UpdateCheck.h"
 
 namespace fastpdf::app {
 
@@ -124,11 +125,12 @@ private:
     void SetZoomPercent(double percent) noexcept;
     void ZoomAt(double newPercent, double cursorX, double cursorY) noexcept;
     void ScrollBy(double dx, double dy) noexcept;
+    void ScrollTo(double x, double y) noexcept;
     void GoToPage(int pageIndex) noexcept;
     void OnMouseWheel(WPARAM wParam, LPARAM lParam) noexcept;
     void OnKeyDown(WPARAM wParam) noexcept;
     void OnCommand(WPARAM wParam) noexcept;
-    void OnLeftButtonDown() noexcept;
+    void OnLeftButtonDown(int x, int y) noexcept;
     // Double-click on rendered page content fits the current page to the
     // viewport (the existing Fit Page command/state). A double-click on the
     // surrounding margin or the gap between pages is ignored.
@@ -142,6 +144,21 @@ private:
     double ViewportWidth() const noexcept;
     double ViewportHeight() const noexcept;
     int CurrentPageIndex() const noexcept;
+
+    // Normal-View navigation (arrows/Space/hand pan/scrollbar). All input
+    // routes through the canonical ScrollBy/ScrollTo state so activity keeps
+    // the existing preview-to-final render behavior.
+    bool CanNormalViewScroll() const noexcept;
+    bool IsFocusInSearchPanel() const noexcept;
+    bool PointOverPageContent(int x, int y) const noexcept;
+    double ArrowStepPx() const noexcept;
+    void OnVScroll(WPARAM wParam) noexcept;
+    void UpdateVerticalScrollbar() noexcept;
+    // Returns true when a hand-pan drag was started (the press is consumed).
+    bool TryStartHandPan(int x, int y) noexcept;
+    void UpdateHandPan(int x, int y) noexcept;
+    void EndHandPan(bool releaseCapture) noexcept;
+    void CancelHandPan() noexcept;
 
     // Presentation mode (Phase 4).
     void EnterPresentation() noexcept;
@@ -195,6 +212,13 @@ private:
     void SaveCurrentToRecentFiles() noexcept;
     void UpdateRecentMenu() noexcept;
     void OnOpenRecent(size_t index) noexcept;
+
+    // Help menu: About and manual update check (manual-only, asynchronous).
+    void OnAbout() noexcept;
+    void OnCheckForUpdates() noexcept;
+    void OnUpdateCheckDone(
+        fastpdf::app::update::UpdateCheckResult* result) noexcept;
+    void SetUpdateMenuEnabled(bool enabled) noexcept;
 
     HWND hwnd_ = nullptr;
     const fastpdf::pdfium::PdfiumLibrary& pdfium_;
@@ -274,6 +298,14 @@ private:
     POINT screenshotStartPoint_{0, 0};
     POINT screenshotCurrentPoint_{0, 0};
 
+    // Hand-pan drag state (normal View only). Active only between a press that
+    // started directly over rendered page content and its deterministic
+    // release/cancel; the origin anchors the drag 1:1.
+    bool handDragging_ = false;
+    POINT handOrigin_{0, 0};
+    double handOriginScrollX_ = 0.0;
+    double handOriginScrollY_ = 0.0;
+
     // Copied notification / Save PNG toast state.
     bool toastVisible_ = false;
     std::wstring toastMessage_;
@@ -321,6 +353,14 @@ private:
     // Recent files state (Phase 8).
     fastpdf::core::recent::RecentState recentState_;
     HMENU recentMenu_ = nullptr;
+
+    // Manual update check state. The checker runs the WinHTTP fetch on a
+    // background thread and posts a small owned result to the UI thread; no
+    // check ever starts automatically.
+    fastpdf::app::update::UpdateChecker updateChecker_;
+    bool updateChecking_ = false;
+    std::wstring updateSavedStatusText_;
+    std::wstring updateSavedStatusMeta_;
 
     // Diagnostics and metrics (Phase 9)
     bool diagnosticsEnabled_ = false;
